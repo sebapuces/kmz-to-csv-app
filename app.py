@@ -82,13 +82,13 @@ def parse_placemarks(kml_text: str) -> list[dict]:
                 if key:
                     extended[key] = get_val(el).strip()
 
+        lieu = f"{lat}, {lon}" if lat and lon else ""
+
         placemarks.append({
             "Nom": name,
             "Description": description,
             "Dossier": folder,
-            "Latitude": lat,
-            "Longitude": lon,
-            "Altitude": alt,
+            "Lieu": lieu,
             **extended,
         })
 
@@ -131,7 +131,11 @@ def build_csv(placemarks: list[dict], with_geocoding: bool) -> str:
     rows = []
     for i, pm in enumerate(placemarks):
         row = dict(pm)
-        lat, lon = row.get("Latitude", ""), row.get("Longitude", "")
+        lieu = row.get("Lieu", "")
+        if lieu:
+            lat, lon = lieu.split(", ", 1)
+        else:
+            lat, lon = "", ""
         if with_geocoding:
             if i > 0:
                 time.sleep(1.1)

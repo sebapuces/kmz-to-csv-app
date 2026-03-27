@@ -35,7 +35,7 @@ Fichier unique `app.py` avec 4 sections :
 
 ## Colonnes CSV produites
 
-Nom, Description, Dossier, Latitude, Longitude, Altitude, [champs etendus KML], Adresse (si geocodage), Google Maps (lien)
+Nom, Description, Dossier, Lieu (format "lat, lon" compatible propriete Lieu Notion), [champs etendus KML], Adresse (si geocodage), Google Maps (lien)
 
 ## Securite
 
