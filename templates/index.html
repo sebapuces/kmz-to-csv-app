@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KMZ → CSV pour Notion</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0,0,0,.08);
+            padding: 48px;
+            max-width: 520px;
+            width: 100%;
+        }
+        h1 {
+            font-size: 1.6rem;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: #888;
+            font-size: .95rem;
+            margin-bottom: 32px;
+        }
+        .drop-zone {
+            border: 2px dashed #ccc;
+            border-radius: 12px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all .2s;
+            margin-bottom: 20px;
+        }
+        .drop-zone:hover, .drop-zone.drag-over {
+            border-color: #4a90d9;
+            background: #f0f6ff;
+        }
+        .drop-zone .icon { font-size: 2.5rem; margin-bottom: 8px; }
+        .drop-zone p { color: #666; }
+        .drop-zone .filename {
+            margin-top: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        .option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 24px;
+            font-size: .95rem;
+        }
+        .option input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+        }
+        .option .note {
+            display: block;
+            color: #999;
+            font-size: .82rem;
+            margin-top: 2px;
+        }
+        button[type="submit"] {
+            width: 100%;
+            padding: 14px;
+            font-size: 1rem;
+            font-weight: 600;
+            background: #4a90d9;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: background .2s;
+        }
+        button[type="submit"]:hover { background: #3a7bc8; }
+        button[type="submit"]:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .spinner {
+            display: none;
+            text-align: center;
+            margin-top: 16px;
+            color: #888;
+        }
+        .spinner.visible { display: block; }
+        .spinner .dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            background: #4a90d9;
+            border-radius: 50%;
+            margin: 0 3px;
+            animation: bounce .6s infinite alternate;
+        }
+        .spinner .dot:nth-child(2) { animation-delay: .2s; }
+        .spinner .dot:nth-child(3) { animation-delay: .4s; }
+        @keyframes bounce { to { transform: translateY(-8px); opacity: .4; } }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>KMZ → CSV</h1>
+        <p class="subtitle">Convertis une carte Google Maps (.kmz) en CSV importable dans Notion</p>
+
+        <form id="form" action="/convert" method="post" enctype="multipart/form-data">
+            <div class="drop-zone" id="dropZone">
+                <div class="icon">📍</div>
+                <p>Glisse ton fichier .kmz ici<br>ou clique pour le selectionner</p>
+                <div class="filename" id="fileName"></div>
+                <input type="file" name="kmz_file" id="fileInput" accept=".kmz" hidden>
+            </div>
+
+            <label class="option">
+                <input type="checkbox" name="geocoding" checked>
+                <span>
+                    Ajouter les adresses (geocodage)
+                    <span class="note">Plus lent (~1 sec/point) mais ajoute une colonne Adresse</span>
+                </span>
+            </label>
+
+            <button type="submit" id="submitBtn" disabled>Convertir en CSV</button>
+        </form>
+
+        <div class="spinner" id="spinner">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <p style="margin-top:10px">Conversion en cours... <span id="eta"></span></p>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById("dropZone");
+        const fileInput = document.getElementById("fileInput");
+        const fileName = document.getElementById("fileName");
+        const submitBtn = document.getElementById("submitBtn");
+        const form = document.getElementById("form");
+        const spinner = document.getElementById("spinner");
+        const eta = document.getElementById("eta");
+
+        dropZone.addEventListener("click", () => fileInput.click());
+        dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+        dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+        dropZone.addEventListener("drop", e => {
+            e.preventDefault();
+            dropZone.classList.remove("drag-over");
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                onFileSelected();
+            }
+        });
+        fileInput.addEventListener("change", onFileSelected);
+
+        function onFileSelected() {
+            const file = fileInput.files[0];
+            if (file) {
+                fileName.textContent = file.name;
+                submitBtn.disabled = false;
+            }
+        }
+
+        form.addEventListener("submit", function(e) {
+            e.preventDefault();
+            submitBtn.disabled = true;
+            spinner.classList.add("visible");
+
+            const geocoding = form.querySelector('[name="geocoding"]').checked;
+            if (geocoding) {
+                eta.textContent = "(peut prendre quelques minutes avec le geocodage)";
+            }
+
+            const formData = new FormData(form);
+            fetch("/convert", { method: "POST", body: formData })
+                .then(resp => {
+                    if (!resp.ok) return resp.text().then(t => { throw new Error(t); });
+                    const name = resp.headers.get("content-disposition")?.match(/filename="?(.+?)"?$/)?.[1] || "export.csv";
+                    return resp.blob().then(blob => ({ blob, name }));
+                })
+                .then(({ blob, name }) => {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url; a.download = name; a.click();
+                    URL.revokeObjectURL(url);
+                })
+                .catch(err => alert("Erreur : " + err.message))
+                .finally(() => {
+                    submitBtn.disabled = false;
+                    spinner.classList.remove("visible");
+                });
+        });
+    </script>
+</body>
+</html>
