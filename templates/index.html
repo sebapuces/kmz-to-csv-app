@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KMZ → CSV pour Notion</title>
+    <title>KMZ → Notion</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -14,24 +14,18 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: 20px;
         }
         .card {
             background: white;
             border-radius: 16px;
             box-shadow: 0 4px 24px rgba(0,0,0,.08);
             padding: 48px;
-            max-width: 520px;
+            max-width: 560px;
             width: 100%;
         }
-        h1 {
-            font-size: 1.6rem;
-            margin-bottom: 8px;
-        }
-        .subtitle {
-            color: #888;
-            font-size: .95rem;
-            margin-bottom: 32px;
-        }
+        h1 { font-size: 1.6rem; margin-bottom: 8px; }
+        .subtitle { color: #888; font-size: .95rem; margin-bottom: 32px; }
         .drop-zone {
             border: 2px dashed #ccc;
             border-radius: 12px;
@@ -47,71 +41,64 @@
         }
         .drop-zone .icon { font-size: 2.5rem; margin-bottom: 8px; }
         .drop-zone p { color: #666; }
-        .drop-zone .filename {
-            margin-top: 8px;
-            font-weight: 600;
-            color: #333;
-        }
+        .drop-zone .filename { margin-top: 8px; font-weight: 600; color: #333; }
         .option {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 24px;
-            font-size: .95rem;
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 20px; font-size: .95rem;
         }
-        .option input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
+        .option input[type="checkbox"] { width: 18px; height: 18px; }
+        .option .note { display: block; color: #999; font-size: .82rem; margin-top: 2px; }
+        .section-title {
+            font-size: .85rem; font-weight: 600; color: #999;
+            text-transform: uppercase; letter-spacing: .5px;
+            margin: 24px 0 12px; padding-top: 16px;
+            border-top: 1px solid #eee;
         }
-        .option .note {
-            display: block;
-            color: #999;
-            font-size: .82rem;
-            margin-top: 2px;
+        .field { margin-bottom: 14px; }
+        .field label { display: block; font-size: .9rem; font-weight: 500; margin-bottom: 4px; }
+        .field input {
+            width: 100%; padding: 10px 12px; font-size: .9rem;
+            border: 1px solid #ddd; border-radius: 8px;
+            transition: border-color .2s;
         }
-        button[type="submit"] {
-            width: 100%;
-            padding: 14px;
-            font-size: 1rem;
-            font-weight: 600;
-            background: #4a90d9;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-            transition: background .2s;
+        .field input:focus { outline: none; border-color: #4a90d9; }
+        .field .hint { font-size: .78rem; color: #aaa; margin-top: 3px; }
+        .buttons { display: flex; gap: 10px; margin-top: 24px; }
+        .btn {
+            flex: 1; padding: 14px; font-size: 1rem; font-weight: 600;
+            border: none; border-radius: 10px; cursor: pointer; transition: background .2s;
         }
-        button[type="submit"]:hover { background: #3a7bc8; }
-        button[type="submit"]:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
+        .btn:disabled { background: #ccc !important; cursor: not-allowed; }
+        .btn-primary { background: #4a90d9; color: white; }
+        .btn-primary:hover:not(:disabled) { background: #3a7bc8; }
+        .btn-secondary { background: #eee; color: #555; }
+        .btn-secondary:hover:not(:disabled) { background: #ddd; }
         .spinner {
-            display: none;
-            text-align: center;
-            margin-top: 16px;
-            color: #888;
+            display: none; text-align: center; margin-top: 16px; color: #888;
         }
         .spinner.visible { display: block; }
         .spinner .dot {
-            display: inline-block;
-            width: 8px; height: 8px;
-            background: #4a90d9;
-            border-radius: 50%;
-            margin: 0 3px;
+            display: inline-block; width: 8px; height: 8px;
+            background: #4a90d9; border-radius: 50%; margin: 0 3px;
             animation: bounce .6s infinite alternate;
         }
         .spinner .dot:nth-child(2) { animation-delay: .2s; }
         .spinner .dot:nth-child(3) { animation-delay: .4s; }
         @keyframes bounce { to { transform: translateY(-8px); opacity: .4; } }
+        .result {
+            display: none; margin-top: 16px; padding: 14px;
+            border-radius: 10px; font-size: .9rem;
+        }
+        .result.success { display: block; background: #e8f5e9; color: #2e7d32; }
+        .result.error { display: block; background: #fbe9e7; color: #c62828; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>KMZ → CSV</h1>
-        <p class="subtitle">Convertis une carte Google Maps (.kmz) en CSV importable dans Notion</p>
+        <h1>KMZ → Notion</h1>
+        <p class="subtitle">Importe une carte Google Maps (.kmz) dans une base Notion</p>
 
-        <form id="form" action="/convert" method="post" enctype="multipart/form-data">
+        <form id="form" enctype="multipart/form-data">
             <div class="drop-zone" id="dropZone">
                 <div class="icon">📍</div>
                 <p>Glisse ton fichier .kmz ici<br>ou clique pour le selectionner</p>
@@ -127,23 +114,56 @@
                 </span>
             </label>
 
-            <button type="submit" id="submitBtn" disabled>Convertir en CSV</button>
+            <div class="section-title">Notion</div>
+
+            <div class="field">
+                <label for="notionToken">Token d'integration</label>
+                <input type="password" id="notionToken" name="notion_token"
+                       placeholder="ntn_..." {{ 'value=""' if has_token else '' }}>
+                <div class="hint">
+                    {% if has_token %}
+                        Variable NOTION_TOKEN detectee. Laisse vide pour l'utiliser.
+                    {% else %}
+                        Cree une integration sur notion.so/my-integrations
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="notionDb">URL de la base Notion</label>
+                <input type="text" id="notionDb" name="notion_database"
+                       placeholder="https://www.notion.so/...">
+                <div class="hint">Copie l'URL de ta base depuis Notion (partage > copier le lien)</div>
+            </div>
+
+            <div class="buttons">
+                <button type="button" class="btn btn-primary" id="btnNotion" disabled>
+                    Importer dans Notion
+                </button>
+                <button type="button" class="btn btn-secondary" id="btnCsv" disabled>
+                    CSV
+                </button>
+            </div>
         </form>
 
         <div class="spinner" id="spinner">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-            <p style="margin-top:10px">Conversion en cours... <span id="eta"></span></p>
+            <p style="margin-top:10px" id="spinnerText">Import en cours...</p>
         </div>
+
+        <div class="result" id="result"></div>
     </div>
 
     <script>
         const dropZone = document.getElementById("dropZone");
         const fileInput = document.getElementById("fileInput");
         const fileName = document.getElementById("fileName");
-        const submitBtn = document.getElementById("submitBtn");
+        const btnNotion = document.getElementById("btnNotion");
+        const btnCsv = document.getElementById("btnCsv");
         const form = document.getElementById("form");
         const spinner = document.getElementById("spinner");
-        const eta = document.getElementById("eta");
+        const spinnerText = document.getElementById("spinnerText");
+        const result = document.getElementById("result");
 
         dropZone.addEventListener("click", () => fileInput.click());
         dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
@@ -162,19 +182,64 @@
             const file = fileInput.files[0];
             if (file) {
                 fileName.textContent = file.name;
-                submitBtn.disabled = false;
+                btnNotion.disabled = false;
+                btnCsv.disabled = false;
             }
         }
 
-        form.addEventListener("submit", function(e) {
-            e.preventDefault();
-            submitBtn.disabled = true;
+        function showSpinner(text) {
+            result.className = "result";
             spinner.classList.add("visible");
+            spinnerText.textContent = text;
+            btnNotion.disabled = true;
+            btnCsv.disabled = true;
+        }
 
-            const geocoding = form.querySelector('[name="geocoding"]').checked;
-            if (geocoding) {
-                eta.textContent = "(peut prendre quelques minutes avec le geocodage)";
+        function hideSpinner() {
+            spinner.classList.remove("visible");
+            if (fileInput.files.length) {
+                btnNotion.disabled = false;
+                btnCsv.disabled = false;
             }
+        }
+
+        // ── Notion import ──
+        btnNotion.addEventListener("click", () => {
+            const geocoding = form.querySelector('[name="geocoding"]').checked;
+            showSpinner(geocoding
+                ? "Import en cours (geocodage actif, peut prendre quelques minutes)..."
+                : "Import en cours...");
+
+            const formData = new FormData(form);
+            fetch("/import-notion", { method: "POST", body: formData })
+                .then(resp => resp.json().then(data => ({ ok: resp.ok, data })))
+                .then(({ ok, data }) => {
+                    hideSpinner();
+                    if (!ok || data.error) {
+                        result.className = "result error";
+                        result.textContent = data.error || "Erreur inconnue";
+                        return;
+                    }
+                    let msg = `${data.created} point(s) importes dans Notion (carte : ${data.carte})`;
+                    if (data.errors && data.errors.length) {
+                        msg += `\n${data.errors.length} erreur(s) : ${data.errors.slice(0, 3).join(", ")}`;
+                    }
+                    result.className = "result success";
+                    result.textContent = msg;
+                })
+                .catch(err => {
+                    hideSpinner();
+                    result.className = "result error";
+                    result.textContent = "Erreur : " + err.message;
+                });
+        });
+
+        // ── CSV download ──
+        btnCsv.addEventListener("click", () => {
+            const geocoding = form.querySelector('[name="geocoding"]').checked;
+            showSpinner(geocoding
+                ? "Conversion en cours (geocodage actif)..."
+                : "Conversion en cours...");
 
             const formData = new FormData(form);
             fetch("/convert", { method: "POST", body: formData })
@@ -188,11 +253,12 @@
                     const a = document.createElement("a");
                     a.href = url; a.download = name; a.click();
                     URL.revokeObjectURL(url);
+                    hideSpinner();
                 })
-                .catch(err => alert("Erreur : " + err.message))
-                .finally(() => {
-                    submitBtn.disabled = false;
-                    spinner.classList.remove("visible");
+                .catch(err => {
+                    hideSpinner();
+                    result.className = "result error";
+                    result.textContent = "Erreur : " + err.message;
                 });
         });
     </script>
