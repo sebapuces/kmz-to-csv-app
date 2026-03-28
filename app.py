@@ -7,14 +7,17 @@ import json
 import logging
 import os
 import re
+import ssl
 import time
 import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
 
+import certifi
+
 from defusedxml.ElementTree import fromstring as xml_fromstring
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 from notion_client import Client as NotionClient
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +31,7 @@ MAX_KML_SIZE = 10 * 1024 * 1024  # 10 MB max after decompression
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 NOMINATIM_HEADERS = {"User-Agent": "kmz-to-csv-webapp/1.0"}
+SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 
 # ── KMZ / KML parsing ─────────────────────────────────────────────
@@ -57,6 +61,26 @@ def strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text).strip()
 
 
+# Google Maps icon style format: "icon-{ID}-{HEX_COLOR}[-normal|-highlight|-nodesc...]"
+COLOR_NAMES = {
+    "000000": "Noir", "0288D1": "Bleu", "0F9D58": "Vert",
+    "1A237E": "Bleu fonce", "3949AB": "Indigo", "7CB342": "Vert clair",
+    "9C27B0": "Violet", "A52714": "Rouge fonce", "BDBDBD": "Gris",
+    "C2185B": "Rose", "E65100": "Orange", "F57F17": "Jaune fonce",
+    "FF5252": "Rouge", "FFD600": "Jaune", "FFEA00": "Jaune vif",
+    "795548": "Marron",
+}
+
+
+def extract_color(style_url: str) -> str:
+    """Extrait la couleur depuis un styleUrl KML (ex: '#icon-1899-FF5252' → 'Rouge')."""
+    m = re.search(r"icon-\d+-([0-9A-Fa-f]{6})", style_url)
+    if not m:
+        return ""
+    hex_color = m.group(1).upper()
+    return COLOR_NAMES.get(hex_color, f"#{hex_color}")
+
+
 def parse_placemarks(kml_text: str) -> list[dict]:
     root = xml_fromstring(kml_text)
     placemarks = []
@@ -73,7 +97,7 @@ def parse_placemarks(kml_text: str) -> list[dict]:
         description = strip_html(pm.findtext(f"{KML_NS}description", ""))
         folder = folder_map.get(pm, "")
 
-        lat, lon, alt = "", "", ""
+        lat, lon = "", ""
         point = pm.find(f".//{KML_NS}Point/{KML_NS}coordinates")
         line = pm.find(f".//{KML_NS}LineString/{KML_NS}coordinates")
         coords_text = ""
@@ -85,7 +109,9 @@ def parse_placemarks(kml_text: str) -> list[dict]:
             parts = coords_text.split(",")
             if len(parts) >= 2:
                 lon, lat = parts[0].strip(), parts[1].strip()
-                alt = parts[2].strip() if len(parts) >= 3 else ""
+
+        style_url = pm.findtext(f"{KML_NS}styleUrl", "")
+        couleur = extract_color(style_url)
 
         extended = {}
         for tag, get_val in (
@@ -97,13 +123,17 @@ def parse_placemarks(kml_text: str) -> list[dict]:
                 if key:
                     extended[key] = get_val(el).strip()
 
+        # Ignorer les placemarks sans coordonnees (notes, fragments, annotations)
+        if not lat:
+            continue
+
         placemarks.append({
             "Nom": name,
             "Description": description,
             "Dossier": folder,
+            "Couleur": couleur,
             "Latitude": lat,
             "Longitude": lon,
-            "Altitude": alt,
             **extended,
         })
 
@@ -114,6 +144,7 @@ def parse_placemarks(kml_text: str) -> list[dict]:
 
 def reverse_geocode(lat: str, lon: str) -> str:
     if not lat or not lon:
+        log.info("Geocodage ignore : coordonnees vides (lat=%r, lon=%r)", lat, lon)
         return ""
     params = urllib.parse.urlencode({
         "lat": lat, "lon": lon, "format": "json", "zoom": 18,
@@ -122,9 +153,11 @@ def reverse_geocode(lat: str, lon: str) -> str:
     url = f"{NOMINATIM_URL}?{params}"
     req = urllib.request.Request(url, headers=NOMINATIM_HEADERS)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as resp:
             data = json.loads(resp.read())
-            return data.get("display_name", "")
+            addr = data.get("display_name", "")
+            log.info("Geocodage OK pour %s,%s : %s", lat, lon, addr[:80])
+            return addr
     except Exception as exc:
         log.warning("Geocodage echoue pour %s,%s : %s", lat, lon, exc)
         return ""
@@ -136,7 +169,7 @@ def google_maps_link(lat: str, lon: str) -> str:
     return f"https://www.google.com/maps?q={lat},{lon}"
 
 
-# ── Enrichment ─────────────────────────────────────────────────────
+# ── CSV generation ─────────────────────────────────────────────────
 
 def enrich_placemarks(placemarks, carte_name, with_geocoding):
     rows = []
@@ -153,8 +186,6 @@ def enrich_placemarks(placemarks, carte_name, with_geocoding):
     return rows
 
 
-# ── CSV generation ─────────────────────────────────────────────────
-
 def build_csv(rows: list[dict]) -> str:
     if not rows:
         return ""
@@ -169,18 +200,18 @@ def build_csv(rows: list[dict]) -> str:
 # ── Notion integration ─────────────────────────────────────────────
 
 STANDARD_FIELDS = {
-    "Nom", "Description", "Dossier", "Carte",
-    "Latitude", "Longitude", "Altitude",
+    "Nom", "Description", "Dossier", "Couleur", "Carte",
+    "Latitude", "Longitude",
     "Adresse", "Google Maps",
 }
 
 DB_PROPERTIES = {
     "Description": {"rich_text": {}},
     "Dossier": {"select": {}},
+    "Couleur": {"select": {}},
     "Carte": {"select": {}},
     "Latitude": {"number": {"format": "number"}},
     "Longitude": {"number": {"format": "number"}},
-    "Altitude": {"number": {"format": "number"}},
     "Adresse": {"rich_text": {}},
     "Google Maps": {"url": {}},
 }
@@ -190,7 +221,6 @@ def parse_database_id(url_or_id: str) -> str:
     url_or_id = url_or_id.strip().rstrip("/")
     if "/" in url_or_id:
         segment = url_or_id.split("?")[0].split("/")[-1]
-        # "Page-Title-abc123def456..." → extract last 32 hex chars
         clean = segment.replace("-", "")
         if len(clean) >= 32:
             hex_part = clean[-32:]
@@ -230,13 +260,13 @@ def create_notion_page(notion, database_id, row):
             props[field] = {"rich_text": [{"text": {"content": val[:2000]}}]}
 
     # Select
-    for field in ("Dossier", "Carte"):
+    for field in ("Dossier", "Couleur", "Carte"):
         val = row.get(field, "")
         if val:
             props[field] = {"select": {"name": val[:100]}}
 
     # Numbers
-    for field in ("Latitude", "Longitude", "Altitude"):
+    for field in ("Latitude", "Longitude"):
         val = row.get(field, "")
         if val:
             try:
@@ -255,29 +285,6 @@ def create_notion_page(notion, database_id, row):
             props[k] = {"rich_text": [{"text": {"content": str(v)[:2000]}}]}
 
     notion.pages.create(parent={"database_id": database_id}, properties=props)
-
-
-def import_to_notion(token, database_url, rows):
-    notion = NotionClient(auth=token)
-    database_id = parse_database_id(database_url)
-
-    extra_fields = set()
-    for row in rows:
-        extra_fields.update(k for k in row if k not in STANDARD_FIELDS)
-
-    ensure_db_properties(notion, database_id, extra_fields)
-
-    created = 0
-    errors = []
-    for row in rows:
-        try:
-            create_notion_page(notion, database_id, row)
-            created += 1
-        except Exception as e:
-            errors.append(f"{row.get('Nom', '?')}: {e}")
-            log.warning("Erreur Notion pour %s: %s", row.get("Nom"), e)
-
-    return created, errors
 
 
 # ── Routes ─────────────────────────────────────────────────────────
@@ -318,16 +325,16 @@ def convert():
 def import_notion_route():
     file = request.files.get("kmz_file")
     if not file or not file.filename.lower().endswith(".kmz"):
-        return jsonify({"error": "Merci d'envoyer un fichier .kmz"}), 400
+        return _ndjson_error("Merci d'envoyer un fichier .kmz")
 
     token = (request.form.get("notion_token", "").strip()
              or os.environ.get("NOTION_TOKEN", ""))
     database_url = request.form.get("notion_database", "").strip()
 
     if not token:
-        return jsonify({"error": "Token Notion manquant"}), 400
+        return _ndjson_error("Token Notion manquant")
     if not database_url:
-        return jsonify({"error": "URL de la base Notion manquante"}), 400
+        return _ndjson_error("URL de la base Notion manquante")
 
     with_geocoding = request.form.get("geocoding") == "on"
 
@@ -336,16 +343,100 @@ def import_notion_route():
         kml_text = extract_kml(kmz_bytes)
         carte_name = extract_map_name(kml_text) or Path(file.filename).stem
         placemarks = parse_placemarks(kml_text)
-
-        if not placemarks:
-            return jsonify({"error": "Aucun point trouve dans le fichier."}), 400
-
-        rows = enrich_placemarks(placemarks, carte_name, with_geocoding)
-        created, errors = import_to_notion(token, database_url, rows)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _ndjson_error(str(e))
 
-    return jsonify({"created": created, "errors": errors, "carte": carte_name})
+    if not placemarks:
+        return _ndjson_error("Aucun point trouve dans le fichier.")
+
+    def generate():
+        total = len(placemarks)
+        notion = NotionClient(auth=token)
+        database_id = parse_database_id(database_url)
+
+        # Ensure properties
+        yield _ndjson_line({"step": "init", "total": total, "carte": carte_name})
+
+        extra_fields = set()
+        for pm in placemarks:
+            extra_fields.update(k for k in pm if k not in STANDARD_FIELDS)
+
+        try:
+            ensure_db_properties(notion, database_id, extra_fields)
+        except Exception as e:
+            yield _ndjson_line({"step": "error", "message": f"Erreur config base Notion : {e}"})
+            return
+
+        created = 0
+        errors = []
+
+        for i, pm in enumerate(placemarks):
+            row = dict(pm)
+            row["Carte"] = carte_name
+            lat, lon = row.get("Latitude", ""), row.get("Longitude", "")
+
+            # Geocoding
+            if with_geocoding:
+                if i > 0:
+                    time.sleep(1.1)
+                addr = reverse_geocode(lat, lon)
+                row["Adresse"] = addr
+                yield _ndjson_line({
+                    "step": "geocode",
+                    "current": i + 1,
+                    "total": total,
+                    "name": row.get("Nom", ""),
+                    "adresse": addr[:100],
+                })
+
+            row["Google Maps"] = google_maps_link(lat, lon)
+
+            # Create Notion page
+            try:
+                create_notion_page(notion, database_id, row)
+                created += 1
+                yield _ndjson_line({
+                    "step": "imported",
+                    "current": i + 1,
+                    "total": total,
+                    "name": row.get("Nom", ""),
+                })
+            except Exception as e:
+                err = f"{row.get('Nom', '?')}: {e}"
+                errors.append(err)
+                log.warning("Erreur Notion pour %s: %s", row.get("Nom"), e)
+                yield _ndjson_line({
+                    "step": "import_error",
+                    "current": i + 1,
+                    "total": total,
+                    "name": row.get("Nom", ""),
+                    "message": str(e)[:200],
+                })
+
+        yield _ndjson_line({
+            "step": "done",
+            "created": created,
+            "errors": errors,
+            "carte": carte_name,
+        })
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
+def _ndjson_line(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False) + "\n"
+
+
+def _ndjson_error(message: str):
+    return Response(
+        _ndjson_line({"step": "error", "message": message}),
+        mimetype="application/x-ndjson",
+        status=400,
+    )
 
 
 if __name__ == "__main__":

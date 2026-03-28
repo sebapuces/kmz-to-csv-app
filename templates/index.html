@@ -73,21 +73,41 @@
         .btn-primary:hover:not(:disabled) { background: #3a7bc8; }
         .btn-secondary { background: #eee; color: #555; }
         .btn-secondary:hover:not(:disabled) { background: #ddd; }
-        .spinner {
-            display: none; text-align: center; margin-top: 16px; color: #888;
+
+        /* Progress */
+        .progress-area {
+            display: none;
+            margin-top: 20px;
         }
-        .spinner.visible { display: block; }
-        .spinner .dot {
-            display: inline-block; width: 8px; height: 8px;
-            background: #4a90d9; border-radius: 50%; margin: 0 3px;
-            animation: bounce .6s infinite alternate;
+        .progress-area.visible { display: block; }
+        .progress-bar-wrap {
+            background: #eee;
+            border-radius: 8px;
+            height: 8px;
+            overflow: hidden;
+            margin-bottom: 10px;
         }
-        .spinner .dot:nth-child(2) { animation-delay: .2s; }
-        .spinner .dot:nth-child(3) { animation-delay: .4s; }
-        @keyframes bounce { to { transform: translateY(-8px); opacity: .4; } }
+        .progress-bar {
+            height: 100%;
+            background: #4a90d9;
+            border-radius: 8px;
+            width: 0%;
+            transition: width .3s ease;
+        }
+        .progress-text {
+            font-size: .85rem;
+            color: #666;
+        }
+        .progress-step {
+            font-size: .8rem;
+            color: #999;
+            margin-top: 4px;
+        }
+
         .result {
             display: none; margin-top: 16px; padding: 14px;
             border-radius: 10px; font-size: .9rem;
+            white-space: pre-line;
         }
         .result.success { display: block; background: #e8f5e9; color: #2e7d32; }
         .result.error { display: block; background: #fbe9e7; color: #c62828; }
@@ -119,7 +139,7 @@
             <div class="field">
                 <label for="notionToken">Token d'integration</label>
                 <input type="password" id="notionToken" name="notion_token"
-                       placeholder="ntn_..." {{ 'value=""' if has_token else '' }}>
+                       placeholder="ntn_...">
                 <div class="hint">
                     {% if has_token %}
                         Variable NOTION_TOKEN detectee. Laisse vide pour l'utiliser.
@@ -146,9 +166,12 @@
             </div>
         </form>
 
-        <div class="spinner" id="spinner">
-            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-            <p style="margin-top:10px" id="spinnerText">Import en cours...</p>
+        <div class="progress-area" id="progressArea">
+            <div class="progress-bar-wrap">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-text" id="progressText"></div>
+            <div class="progress-step" id="progressStep"></div>
         </div>
 
         <div class="result" id="result"></div>
@@ -161,8 +184,10 @@
         const btnNotion = document.getElementById("btnNotion");
         const btnCsv = document.getElementById("btnCsv");
         const form = document.getElementById("form");
-        const spinner = document.getElementById("spinner");
-        const spinnerText = document.getElementById("spinnerText");
+        const progressArea = document.getElementById("progressArea");
+        const progressBar = document.getElementById("progressBar");
+        const progressText = document.getElementById("progressText");
+        const progressStep = document.getElementById("progressStep");
         const result = document.getElementById("result");
 
         dropZone.addEventListener("click", () => fileInput.click());
@@ -187,79 +212,131 @@
             }
         }
 
-        function showSpinner(text) {
+        function setButtons(disabled) {
+            btnNotion.disabled = disabled;
+            btnCsv.disabled = disabled;
+        }
+
+        function resetUI() {
             result.className = "result";
-            spinner.classList.add("visible");
-            spinnerText.textContent = text;
-            btnNotion.disabled = true;
-            btnCsv.disabled = true;
+            progressArea.classList.remove("visible");
+            progressBar.style.width = "0%";
+            progressText.textContent = "";
+            progressStep.textContent = "";
         }
 
-        function hideSpinner() {
-            spinner.classList.remove("visible");
-            if (fileInput.files.length) {
-                btnNotion.disabled = false;
-                btnCsv.disabled = false;
-            }
-        }
-
-        // ── Notion import ──
-        btnNotion.addEventListener("click", () => {
-            const geocoding = form.querySelector('[name="geocoding"]').checked;
-            showSpinner(geocoding
-                ? "Import en cours (geocodage actif, peut prendre quelques minutes)..."
-                : "Import en cours...");
+        // ── Notion import (streaming) ──
+        btnNotion.addEventListener("click", async () => {
+            resetUI();
+            setButtons(true);
+            progressArea.classList.add("visible");
+            progressText.textContent = "Connexion a Notion...";
 
             const formData = new FormData(form);
-            fetch("/import-notion", { method: "POST", body: formData })
-                .then(resp => resp.json().then(data => ({ ok: resp.ok, data })))
-                .then(({ ok, data }) => {
-                    hideSpinner();
-                    if (!ok || data.error) {
-                        result.className = "result error";
-                        result.textContent = data.error || "Erreur inconnue";
-                        return;
+
+            try {
+                const resp = await fetch("/import-notion", { method: "POST", body: formData });
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop(); // keep incomplete line
+
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        let data;
+                        try { data = JSON.parse(line); } catch { continue; }
+                        handleEvent(data);
                     }
-                    let msg = `${data.created} point(s) importes dans Notion (carte : ${data.carte})`;
+                }
+                // Process remaining buffer
+                if (buffer.trim()) {
+                    try { handleEvent(JSON.parse(buffer)); } catch {}
+                }
+            } catch (err) {
+                progressArea.classList.remove("visible");
+                result.className = "result error";
+                result.textContent = "Erreur : " + err.message;
+            }
+
+            setButtons(false);
+        });
+
+        function handleEvent(data) {
+            const pct = data.total ? Math.round((data.current / data.total) * 100) : 0;
+
+            switch (data.step) {
+                case "init":
+                    progressText.textContent = `0 / ${data.total} points — carte : ${data.carte}`;
+                    break;
+
+                case "geocode":
+                    progressBar.style.width = pct + "%";
+                    progressText.textContent = `${data.current} / ${data.total} — geocodage`;
+                    progressStep.textContent = data.name + (data.adresse ? " → " + data.adresse : " (pas d'adresse)");
+                    break;
+
+                case "imported":
+                    progressBar.style.width = pct + "%";
+                    progressText.textContent = `${data.current} / ${data.total} — importe`;
+                    progressStep.textContent = data.name;
+                    break;
+
+                case "import_error":
+                    progressBar.style.width = pct + "%";
+                    progressText.textContent = `${data.current} / ${data.total} — erreur`;
+                    progressStep.textContent = data.name + " : " + data.message;
+                    break;
+
+                case "done":
+                    progressArea.classList.remove("visible");
+                    let msg = `${data.created} point(s) importes (carte : ${data.carte})`;
                     if (data.errors && data.errors.length) {
-                        msg += `\n${data.errors.length} erreur(s) : ${data.errors.slice(0, 3).join(", ")}`;
+                        msg += `\n${data.errors.length} erreur(s) :\n` + data.errors.slice(0, 5).join("\n");
                     }
                     result.className = "result success";
                     result.textContent = msg;
-                })
-                .catch(err => {
-                    hideSpinner();
+                    break;
+
+                case "error":
+                    progressArea.classList.remove("visible");
                     result.className = "result error";
-                    result.textContent = "Erreur : " + err.message;
-                });
-        });
+                    result.textContent = data.message;
+                    break;
+            }
+        }
 
         // ── CSV download ──
-        btnCsv.addEventListener("click", () => {
-            const geocoding = form.querySelector('[name="geocoding"]').checked;
-            showSpinner(geocoding
-                ? "Conversion en cours (geocodage actif)..."
-                : "Conversion en cours...");
+        btnCsv.addEventListener("click", async () => {
+            resetUI();
+            setButtons(true);
+            progressArea.classList.add("visible");
+            progressText.textContent = "Conversion en cours...";
+            progressBar.style.width = "50%";
 
             const formData = new FormData(form);
-            fetch("/convert", { method: "POST", body: formData })
-                .then(resp => {
-                    if (!resp.ok) return resp.text().then(t => { throw new Error(t); });
-                    const name = resp.headers.get("content-disposition")?.match(/filename="?(.+?)"?$/)?.[1] || "export.csv";
-                    return resp.blob().then(blob => ({ blob, name }));
-                })
-                .then(({ blob, name }) => {
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url; a.download = name; a.click();
-                    URL.revokeObjectURL(url);
-                    hideSpinner();
-                })
-                .catch(err => {
-                    hideSpinner();
-                    result.className = "result error";
-                    result.textContent = "Erreur : " + err.message;
-                });
+            try {
+                const resp = await fetch("/convert", { method: "POST", body: formData });
+                if (!resp.ok) throw new Error(await resp.text());
+                const name = resp.headers.get("content-disposition")?.match(/filename="?(.+?)"?$/)?.[1] || "export.csv";
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url; a.download = name; a.click();
+                URL.revokeObjectURL(url);
+                progressArea.classList.remove("visible");
+            } catch (err) {
+                progressArea.classList.remove("visible");
+                result.className = "result error";
+                result.textContent = "Erreur : " + err.message;
+            }
+            setButtons(false);
         });
     </script>
 </body>
