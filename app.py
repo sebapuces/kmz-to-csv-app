@@ -59,7 +59,8 @@ def extract_map_name(kml_text: str) -> str:
 
 
 def strip_html(text: str) -> str:
-    return re.sub(r"<[^>]+>", "", text).strip()
+    text = re.sub(r"<[^>]+>", " ", text)  # espace pour eviter de coller les mots
+    return re.sub(r" {2,}", " ", text).strip()
 
 
 # Google Maps icon style format: "icon-{ID}-{HEX_COLOR}[-normal|-highlight|-nodesc...]"
