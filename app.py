@@ -146,70 +146,86 @@ def parse_placemarks(kml_text: str) -> list[dict]:
 
 ESPECE_KEYWORDS = {
     "Poules": [
-        "poule", "poulet", "gallus", "galline", "volaille", "pondeuse",
-        "poulette", "coq", "chapon", "poussins", "oeufs", "oeuf",
+        "poules?", "poulets?", "gallus", "gallines?", "volailles?", "pondeuses?",
+        "poulettes?", "coqs?", "chapons?", "poussins?", "oeufs?",
     ],
-    "Dindes": ["dinde", "dindon", "dindonneau"],
-    "Canards": ["canard", "mulard", "barbarie", "colvert", "foie gras", "gavage"],
-    "Oies": ["oie", "oison"],
-    "Pintades": ["pintade", "pintadeau"],
-    "Cailles": ["caille"],
-    "Pigeons": ["pigeon", "pigeonneau"],
+    "Dindes": ["dindes?", "dindons?", "dindonneaux?"],
+    "Canards": ["canards?", "mulards?", "barbarie", "colverts?", "foie gras", "gavage"],
+    "Oies": ["oies?", "oisons?"],
+    "Pintades": ["pintades?", "pintadeaux?"],
+    "Cailles": ["cailles?"],
+    "Pigeons": ["pigeons?", "pigeonneaux?"],
     "Cochons": [
-        "cochon", "porc", "porcin", "truie", "verrat",
-        "porcelet", "goret",
+        "cochons?", "porcs?", "porcins?", "truies?", "verrats?",
+        "porcelets?", "gorets?",
     ],
     "Bovins": [
-        "bovin", "vache", "taureau", "veau", "genisse",
-        "boeuf", "taurillon", "broutard", "charolais",
-        "limousin", "blonde d'aquitaine", "montbeliarde",
-        "holstein", "salers", "aubrac",
+        "bovins?", "vaches?", "taureaux?", "veaux?", "genisses?",
+        "boeufs?", "taurillons?", "broutards?", "charolais",
+        "limousins?", "blonde d'aquitaine", "montbeliardes?",
+        "holsteins?", "salers", "aubracs?",
     ],
-    "Ovins": ["ovin", "mouton", "brebis", "agneau", "belier"],
-    "Caprins": ["caprin", "chevre", "bouc", "chevreau", "cabri"],
-    "Lapins": ["lapin", "cuniculture", "cuniculicole", "garenne"],
+    "Ovins": ["ovins?", "moutons?", "brebis", "agneaux?", "beliers?"],
+    "Caprins": ["caprins?", "chevres?", "boucs?", "chevreaux?", "cabris?"],
+    "Lapins": ["lapins?", "cuniculture", "cuniculicole"],
     "Poissons": [
-        "poisson", "pisciculture", "truite", "saumon",
-        "bar", "daurade", "aquaculture",
+        "poissons?", "pisciculture", "truites?", "saumons?",
+        "bars?", "daurades?", "aquaculture",
     ],
-    "Equins": ["cheval", "equin", "jument", "poulain", "ane"],
+    "Equins": ["chevaux?", "cheval", "equins?", "juments?", "poulains?", "anes?"],
 }
+
+
+def _build_keyword_patterns(keyword_dict: dict) -> list[tuple[str, re.Pattern]]:
+    """Compile les mots-cles en regex avec word boundaries."""
+    result = []
+    for label, keywords in keyword_dict.items():
+        pattern = re.compile(r"\b(?:" + "|".join(keywords) + r")\b")
+        result.append((label, pattern))
+    return result
+
+
+_ESPECE_PATTERNS = _build_keyword_patterns(ESPECE_KEYWORDS)
 
 
 def detect_espece(nom: str, description: str, dossier: str) -> str:
     """Deduit l'espece animale a partir du nom, description et dossier."""
     text = f"{nom} {description} {dossier}".lower()
-    for espece, keywords in ESPECE_KEYWORDS.items():
-        for kw in keywords:
-            if kw in text:
-                return espece
+    for espece, pattern in _ESPECE_PATTERNS:
+        if pattern.search(text):
+            return espece
     return ""
 
 
 EXPLOITATION_KEYWORDS = {
     "Abattoir": [
-        "abattoir", "abattage", "tuerie",
+        "abattoirs?", "abattage", "tueries?",
     ],
     "Couvoir": [
-        "couvoir", "eclosion", "accouvage",
+        "couvoirs?", "eclosion", "accouvage",
     ],
     "Élevage": [
-        "elevage", "élevage", "ferme", "exploitation", "batiment",
-        "bâtiment", "hangar", "stabulation", "porcherie",
-        "poulailler", "bergerie", "chevrerie", "clapier",
-        "etable", "étable",
+        "elevages?", "élevages?", "fermes?", "exploitations?", "batiments?",
+        "bâtiments?", "hangars?", "stabulations?", "porcheries?",
+        "poulaillers?", "bergeries?", "chevreries?", "clapiers?",
+        "etables?", "étables?",
     ],
 }
+
+
+_EXPLOITATION_PATTERNS = [
+    (type_expl, re.compile(r"\b(?:" + "|".join(EXPLOITATION_KEYWORDS[type_expl]) + r")\b"))
+    for type_expl in ("Abattoir", "Couvoir", "Élevage")
+]
 
 
 def detect_exploitation(nom: str, description: str, dossier: str) -> str:
     """Classe le lieu en Elevage, Couvoir ou Abattoir."""
     text = f"{nom} {description} {dossier}".lower()
     # Abattoir et Couvoir en priorite (plus specifiques)
-    for type_expl in ("Abattoir", "Couvoir", "Élevage"):
-        for kw in EXPLOITATION_KEYWORDS[type_expl]:
-            if kw in text:
-                return type_expl
+    for type_expl, pattern in _EXPLOITATION_PATTERNS:
+        if pattern.search(text):
+            return type_expl
     return ""
 
 
