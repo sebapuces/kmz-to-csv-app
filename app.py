@@ -12,6 +12,7 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
+from datetime import date
 from pathlib import Path
 
 import certifi
@@ -140,6 +141,83 @@ def parse_placemarks(kml_text: str) -> list[dict]:
     return placemarks
 
 
+# ── Deduction de metadonnees ──────────────────────────────────────
+
+ESPECE_KEYWORDS = {
+    "Poules": [
+        "poule", "poulet", "gallus", "galline", "volaille", "pondeuse",
+        "poulette", "coq", "chapon", "poussins", "oeufs", "oeuf",
+    ],
+    "Dindes": ["dinde", "dindon", "dindonneau"],
+    "Canards": ["canard", "mulard", "barbarie", "colvert", "foie gras", "gavage"],
+    "Oies": ["oie", "oison"],
+    "Pintades": ["pintade", "pintadeau"],
+    "Cailles": ["caille"],
+    "Pigeons": ["pigeon", "pigeonneau"],
+    "Cochons": [
+        "cochon", "porc", "porcin", "truie", "verrat",
+        "porcelet", "goret",
+    ],
+    "Bovins": [
+        "bovin", "vache", "taureau", "veau", "genisse",
+        "boeuf", "taurillon", "broutard", "charolais",
+        "limousin", "blonde d'aquitaine", "montbeliarde",
+        "holstein", "salers", "aubrac",
+    ],
+    "Ovins": ["ovin", "mouton", "brebis", "agneau", "belier"],
+    "Caprins": ["caprin", "chevre", "bouc", "chevreau", "cabri"],
+    "Lapins": ["lapin", "cuniculture", "cuniculicole", "garenne"],
+    "Poissons": [
+        "poisson", "pisciculture", "truite", "saumon",
+        "bar", "daurade", "aquaculture",
+    ],
+    "Equins": ["cheval", "equin", "jument", "poulain", "ane"],
+}
+
+
+def detect_espece(nom: str, description: str, dossier: str) -> str:
+    """Deduit l'espece animale a partir du nom, description et dossier."""
+    text = f"{nom} {description} {dossier}".lower()
+    for espece, keywords in ESPECE_KEYWORDS.items():
+        for kw in keywords:
+            if kw in text:
+                return espece
+    return ""
+
+
+EXPLOITATION_KEYWORDS = {
+    "Abattoir": [
+        "abattoir", "abattage", "tuerie",
+    ],
+    "Couvoir": [
+        "couvoir", "eclosion", "accouvage",
+    ],
+    "Élevage": [
+        "elevage", "élevage", "ferme", "exploitation", "batiment",
+        "bâtiment", "hangar", "stabulation", "porcherie",
+        "poulailler", "bergerie", "chevrerie", "clapier",
+        "etable", "étable",
+    ],
+}
+
+
+def detect_exploitation(nom: str, description: str, dossier: str) -> str:
+    """Classe le lieu en Elevage, Couvoir ou Abattoir."""
+    text = f"{nom} {description} {dossier}".lower()
+    # Abattoir et Couvoir en priorite (plus specifiques)
+    for type_expl in ("Abattoir", "Couvoir", "Élevage"):
+        for kw in EXPLOITATION_KEYWORDS[type_expl]:
+            if kw in text:
+                return type_expl
+    return ""
+
+
+def extract_url(description: str) -> str:
+    """Extrait la premiere URL trouvee dans la description."""
+    m = re.search(r'https?://[^\s<>"\']+', description)
+    return m.group(0).rstrip(".,;:)") if m else ""
+
+
 # ── Geocoding ──────────────────────────────────────────────────────
 
 def reverse_geocode(lat: str, lon: str) -> str:
@@ -172,6 +250,7 @@ def google_maps_link(lat: str, lon: str) -> str:
 # ── CSV generation ─────────────────────────────────────────────────
 
 def enrich_placemarks(placemarks, carte_name, with_geocoding):
+    today = date.today().isoformat()
     rows = []
     for i, pm in enumerate(placemarks):
         row = dict(pm)
@@ -182,6 +261,15 @@ def enrich_placemarks(placemarks, carte_name, with_geocoding):
                 time.sleep(1.1)
             row["Adresse"] = reverse_geocode(lat, lon)
         row["Google Maps"] = google_maps_link(lat, lon)
+        row["Date d'import"] = today
+
+        nom = row.get("Nom", "")
+        desc = row.get("Description", "")
+        dossier = row.get("Dossier", "")
+        row["Espèce"] = detect_espece(nom, desc, dossier)
+        row["URL"] = extract_url(desc)
+        row["Exploitation"] = detect_exploitation(nom, desc, dossier)
+
         rows.append(row)
     return rows
 
@@ -203,6 +291,7 @@ STANDARD_FIELDS = {
     "Nom", "Description", "Dossier", "Couleur", "Carte",
     "Latitude", "Longitude",
     "Adresse", "Google Maps",
+    "Date d'import", "Espèce", "URL", "Exploitation",
 }
 
 DB_PROPERTIES = {
@@ -214,6 +303,10 @@ DB_PROPERTIES = {
     "Longitude": {"number": {"format": "number"}},
     "Adresse": {"rich_text": {}},
     "Google Maps": {"url": {}},
+    "Date d'import": {"date": {}},
+    "Espèce": {"select": {}},
+    "URL": {"url": {}},
+    "Exploitation": {"select": {}},
 }
 
 
@@ -260,7 +353,7 @@ def create_notion_page(notion, database_id, row):
             props[field] = {"rich_text": [{"text": {"content": val[:2000]}}]}
 
     # Select
-    for field in ("Dossier", "Couleur", "Carte"):
+    for field in ("Dossier", "Couleur", "Carte", "Espèce", "Exploitation"):
         val = row.get(field, "")
         if val:
             props[field] = {"select": {"name": val[:100]}}
@@ -274,10 +367,16 @@ def create_notion_page(notion, database_id, row):
             except ValueError:
                 pass
 
-    # URL
-    gm = row.get("Google Maps", "")
-    if gm:
-        props["Google Maps"] = {"url": gm}
+    # URLs
+    for field in ("Google Maps", "URL"):
+        val = row.get(field, "")
+        if val:
+            props[field] = {"url": val}
+
+    # Date
+    date_import = row.get("Date d'import", "")
+    if date_import:
+        props["Date d'import"] = {"date": {"start": date_import}}
 
     # Extended KML fields
     for k, v in row.items():
@@ -297,35 +396,44 @@ def index():
 
 @app.route("/convert", methods=["POST"])
 def convert():
-    file = request.files.get("kmz_file")
-    if not file or not file.filename.lower().endswith(".kmz"):
-        return "Merci d'envoyer un fichier .kmz", 400
+    files = request.files.getlist("kmz_file")
+    files = [f for f in files if f and f.filename.lower().endswith(".kmz")]
+    if not files:
+        return "Merci d'envoyer au moins un fichier .kmz", 400
 
     with_geocoding = request.form.get("geocoding") == "on"
 
-    kmz_bytes = file.stream.read()
-    kml_text = extract_kml(kmz_bytes)
-    carte_name = extract_map_name(kml_text) or Path(file.filename).stem
-    placemarks = parse_placemarks(kml_text)
+    all_rows = []
+    for file in files:
+        kmz_bytes = file.stream.read()
+        kml_text = extract_kml(kmz_bytes)
+        carte_name = extract_map_name(kml_text) or Path(file.filename).stem
+        placemarks = parse_placemarks(kml_text)
+        if placemarks:
+            all_rows.extend(enrich_placemarks(placemarks, carte_name, with_geocoding))
 
-    if not placemarks:
-        return "Aucun point trouve dans le fichier.", 400
+    if not all_rows:
+        return "Aucun point trouve dans les fichiers.", 400
 
-    rows = enrich_placemarks(placemarks, carte_name, with_geocoding)
-    csv_text = build_csv(rows)
+    csv_text = build_csv(all_rows)
 
-    stem = Path(file.filename).stem
-    safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in stem)
-    output_name = (safe_name or "export") + ".csv"
+    if len(files) == 1:
+        stem = Path(files[0].filename).stem
+        safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in stem)
+        output_name = (safe_name or "export") + ".csv"
+    else:
+        output_name = "export_multi.csv"
+
     mem = io.BytesIO(csv_text.encode("utf-8"))
     return send_file(mem, mimetype="text/csv", as_attachment=True, download_name=output_name)
 
 
 @app.route("/import-notion", methods=["POST"])
 def import_notion_route():
-    file = request.files.get("kmz_file")
-    if not file or not file.filename.lower().endswith(".kmz"):
-        return _ndjson_error("Merci d'envoyer un fichier .kmz")
+    files = request.files.getlist("kmz_file")
+    files = [f for f in files if f and f.filename.lower().endswith(".kmz")]
+    if not files:
+        return _ndjson_error("Merci d'envoyer au moins un fichier .kmz")
 
     token = (request.form.get("notion_token", "").strip()
              or os.environ.get("NOTION_TOKEN", ""))
@@ -338,28 +446,42 @@ def import_notion_route():
 
     with_geocoding = request.form.get("geocoding") == "on"
 
-    try:
-        kmz_bytes = file.stream.read()
-        kml_text = extract_kml(kmz_bytes)
-        carte_name = extract_map_name(kml_text) or Path(file.filename).stem
-        placemarks = parse_placemarks(kml_text)
-    except Exception as e:
-        return _ndjson_error(str(e))
+    # Parse all files upfront
+    all_cartes = []
+    for file in files:
+        try:
+            kmz_bytes = file.stream.read()
+            kml_text = extract_kml(kmz_bytes)
+            carte_name = extract_map_name(kml_text) or Path(file.filename).stem
+            placemarks = parse_placemarks(kml_text)
+            if placemarks:
+                all_cartes.append((carte_name, placemarks))
+        except Exception as e:
+            log.warning("Erreur parsing %s: %s", file.filename, e)
 
-    if not placemarks:
-        return _ndjson_error("Aucun point trouve dans le fichier.")
+    if not all_cartes:
+        return _ndjson_error("Aucun point trouve dans les fichiers.")
+
+    total_points = sum(len(pms) for _, pms in all_cartes)
+    today = date.today().isoformat()
 
     def generate():
-        total = len(placemarks)
         notion = NotionClient(auth=token)
         database_id = parse_database_id(database_url)
+        carte_names = ", ".join(c for c, _ in all_cartes)
 
-        # Ensure properties
-        yield _ndjson_line({"step": "init", "total": total, "carte": carte_name})
+        yield _ndjson_line({
+            "step": "init",
+            "total": total_points,
+            "carte": carte_names,
+            "files": len(all_cartes),
+        })
 
+        # Collect extra fields from all files
         extra_fields = set()
-        for pm in placemarks:
-            extra_fields.update(k for k in pm if k not in STANDARD_FIELDS)
+        for _, placemarks in all_cartes:
+            for pm in placemarks:
+                extra_fields.update(k for k in pm if k not in STANDARD_FIELDS)
 
         try:
             ensure_db_properties(notion, database_id, extra_fields)
@@ -369,55 +491,67 @@ def import_notion_route():
 
         created = 0
         errors = []
+        global_idx = 0
 
-        for i, pm in enumerate(placemarks):
-            row = dict(pm)
-            row["Carte"] = carte_name
-            lat, lon = row.get("Latitude", ""), row.get("Longitude", "")
+        for carte_name, placemarks in all_cartes:
+            for pm in placemarks:
+                row = dict(pm)
+                row["Carte"] = carte_name
+                lat, lon = row.get("Latitude", ""), row.get("Longitude", "")
 
-            # Geocoding
-            if with_geocoding:
-                if i > 0:
-                    time.sleep(1.1)
-                addr = reverse_geocode(lat, lon)
-                row["Adresse"] = addr
-                yield _ndjson_line({
-                    "step": "geocode",
-                    "current": i + 1,
-                    "total": total,
-                    "name": row.get("Nom", ""),
-                    "adresse": addr[:100],
-                })
+                # Geocoding
+                if with_geocoding:
+                    if global_idx > 0:
+                        time.sleep(1.1)
+                    addr = reverse_geocode(lat, lon)
+                    row["Adresse"] = addr
+                    yield _ndjson_line({
+                        "step": "geocode",
+                        "current": global_idx + 1,
+                        "total": total_points,
+                        "name": row.get("Nom", ""),
+                        "adresse": addr[:100],
+                    })
 
-            row["Google Maps"] = google_maps_link(lat, lon)
+                row["Google Maps"] = google_maps_link(lat, lon)
+                row["Date d'import"] = today
 
-            # Create Notion page
-            try:
-                create_notion_page(notion, database_id, row)
-                created += 1
-                yield _ndjson_line({
-                    "step": "imported",
-                    "current": i + 1,
-                    "total": total,
-                    "name": row.get("Nom", ""),
-                })
-            except Exception as e:
-                err = f"{row.get('Nom', '?')}: {e}"
-                errors.append(err)
-                log.warning("Erreur Notion pour %s: %s", row.get("Nom"), e)
-                yield _ndjson_line({
-                    "step": "import_error",
-                    "current": i + 1,
-                    "total": total,
-                    "name": row.get("Nom", ""),
-                    "message": str(e)[:200],
-                })
+                nom = row.get("Nom", "")
+                desc = row.get("Description", "")
+                dossier = row.get("Dossier", "")
+                row["Espèce"] = detect_espece(nom, desc, dossier)
+                row["URL"] = extract_url(desc)
+                row["Exploitation"] = detect_exploitation(nom, desc, dossier)
+
+                # Create Notion page
+                try:
+                    create_notion_page(notion, database_id, row)
+                    created += 1
+                    yield _ndjson_line({
+                        "step": "imported",
+                        "current": global_idx + 1,
+                        "total": total_points,
+                        "name": nom,
+                    })
+                except Exception as e:
+                    err = f"{nom or '?'}: {e}"
+                    errors.append(err)
+                    log.warning("Erreur Notion pour %s: %s", nom, e)
+                    yield _ndjson_line({
+                        "step": "import_error",
+                        "current": global_idx + 1,
+                        "total": total_points,
+                        "name": nom,
+                        "message": str(e)[:200],
+                    })
+
+                global_idx += 1
 
         yield _ndjson_line({
             "step": "done",
             "created": created,
             "errors": errors,
-            "carte": carte_name,
+            "carte": carte_names,
         })
 
     return Response(

@@ -1,69 +1,61 @@
-# KMZ to Notion App
+# CLAUDE.md
 
-Webapp Flask qui importe des fichiers KMZ (cartes Google Maps) dans une base Notion, avec export CSV en option.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Stack
+## Projet
 
-- Python 3.10
-- Flask 3.1.3
-- notion-client 2.3.0 (SDK officiel Notion)
-- defusedxml 0.7.1 (parsing XML securise)
-- API Nominatim (OpenStreetMap) pour le geocodage inverse
+Webapp Flask qui importe des fichiers KMZ (cartes Google Maps) dans une base Notion, avec export CSV en option. Contexte L214 : les lieux sont des elevages, couvoirs, abattoirs avec des especes animales.
 
-## Lancer le projet
+## Commandes
 
 ```bash
 python3 -m pip install -r requirements.txt
+python3 app.py                # http://localhost:5050
 # Optionnel : export NOTION_TOKEN=ntn_...
-python3 app.py
-# -> http://localhost:5050
 ```
 
-## Structure
-
-```
-app.py              # Backend Flask (unique fichier)
-templates/index.html # Frontend (drag & drop, AJAX)
-requirements.txt     # Dependances pinnees
-```
+Pas de tests, pas de linter, pas de build step.
 
 ## Architecture
 
-Fichier unique `app.py` avec 6 sections :
-- **KMZ/KML parsing** : extraction du .kml depuis le .kmz, nom de carte, parsing des Placemarks (Point, LineString, Data, SimpleData)
-- **Geocoding** : reverse geocoding via Nominatim avec rate-limit 1.1s entre chaque appel
-- **Enrichment** : ajout tag Carte, Adresse geocodee, lien Google Maps
-- **CSV generation** : construction du CSV avec colonnes dynamiques
-- **Notion integration** : creation auto des proprietes manquantes + import des pages
-- **Routes** : `/` (UI), `/convert` (CSV), `/import-notion` (import Notion)
+Fichier unique `app.py` (~580 lignes) avec 7 sections delimitees par des commentaires `# ──` :
 
-## Proprietes Notion creees
+1. **KMZ/KML parsing** — extraction du .kml depuis le .kmz, parsing XML des Placemarks (Point, LineString, Data, SimpleData), extraction couleur depuis styleUrl
+2. **Deduction metadonnees** — detection automatique Espece (14 especes par mots-cles), Exploitation (Abattoir > Couvoir > Elevage par priorite), extraction URL depuis description
+3. **Geocoding** — reverse geocoding Nominatim avec rate-limit 1.1s, generation liens Google Maps
+4. **CSV generation** — enrichissement des placemarks + export CSV colonnes dynamiques
+5. **Notion integration** — creation auto des proprietes manquantes dans la base (`ensure_db_properties`), creation de pages avec typage correct (title, rich_text, select, number, url, date)
+6. **Routes** — `GET /` (UI), `POST /convert` (CSV multi-fichiers), `POST /import-notion` (streaming NDJSON multi-fichiers)
+7. **NDJSON helpers** — format streaming : steps `init`, `geocode`, `imported`, `import_error`, `done`, `error`
 
-| Propriete | Type Notion | Contenu |
-|-----------|-------------|---------|
-| Nom | title | Nom du placemark |
-| Description | rich_text | Description (HTML strippe) |
-| Dossier | select | Dossier/calque KML |
-| Carte | select | Nom de la carte (tag pour filtrer) |
-| Latitude | number | Latitude GPS |
-| Longitude | number | Longitude GPS |
-| Altitude | number | Altitude (si presente) |
-| Adresse | rich_text | Adresse geocodee (si active) |
-| Google Maps | url | Lien direct vers le point |
-| [champs KML] | rich_text | Donnees etendues du KML |
+Frontend : `templates/index.html` — page unique avec drag & drop multi-fichiers, progress bar temps reel via NDJSON streaming.
 
-Note : la propriete "Place" (lieu sur carte) de Notion n'est pas supportee en ecriture par l'API.
+## Proprietes Notion
 
-## Securite
+| Propriete | Type Notion | Source |
+|-----------|-------------|--------|
+| Nom | title | `<Placemark><name>` |
+| Description | rich_text | `<description>` (HTML strippe) |
+| Dossier | select | Dossier/calque KML parent |
+| Couleur | select | styleUrl (`icon-{id}-{hex}`) |
+| Carte | select | Nom du document KML ou fichier |
+| Latitude / Longitude | number | `<coordinates>` |
+| Adresse | rich_text | Nominatim reverse geocoding |
+| Google Maps | url | Genere depuis lat/lon |
+| Date d'import | date | Date du jour (ISO) |
+| Espece | select | Deduit du nom/description/dossier |
+| URL | url | Premiere URL dans la description |
+| Exploitation | select | Elevage / Couvoir / Abattoir |
+| [champs KML etendus] | rich_text | `<Data>` / `<SimpleData>` |
 
-- XML parse via `defusedxml` (protection XXE)
-- Limite taille upload : 50 Mo (KMZ), 10 Mo (KML decompresse)
-- Sanitisation du nom de fichier de sortie
-- Token Notion via variable d'env ou formulaire (jamais stocke)
-- Debug mode desactive
+`STANDARD_FIELDS` et `DB_PROPERTIES` dans app.py doivent rester synchronises : tout nouveau champ doit etre ajoute aux deux, plus gere dans `create_notion_page`.
 
-## API externes
+## Contraintes techniques
 
-- **Nominatim** (OpenStreetMap) : geocodage inverse, rate-limit 1 req/sec, pas de cle API
-- **Notion API** : token d'integration requis (ntn_...), base partagee avec l'integration
-- User-Agent Nominatim : `kmz-to-csv-webapp/1.0`
+- **Notion API** : la propriete "Place" (location) est read-only, d'ou Latitude/Longitude en number separes
+- **Nominatim** : 1 req/sec max, User-Agent obligatoire, SSL via certifi
+- **XML** : toujours utiliser `defusedxml` (jamais `xml.etree` standard) pour prevenir XXE
+- **Limites** : 50 Mo upload KMZ, 10 Mo KML decompresse, 2000 chars rich_text Notion, 100 chars select
+- **Port** : 5050
+- **Multi-fichiers** : les routes `/convert` et `/import-notion` acceptent plusieurs KMZ via `request.files.getlist("kmz_file")`
+- **Detection espece/exploitation** : matching par mots-cles dans le texte concatene (nom + description + dossier). L'ordre des dicts `ESPECE_KEYWORDS` et `EXPLOITATION_KEYWORDS` definit la priorite de detection.

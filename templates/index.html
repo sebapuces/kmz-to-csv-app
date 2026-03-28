@@ -116,14 +116,14 @@
 <body>
     <div class="card">
         <h1>KMZ → Notion</h1>
-        <p class="subtitle">Importe une carte Google Maps (.kmz) dans une base Notion</p>
+        <p class="subtitle">Importe une ou plusieurs cartes Google Maps (.kmz) dans une base Notion</p>
 
         <form id="form" enctype="multipart/form-data">
             <div class="drop-zone" id="dropZone">
                 <div class="icon">📍</div>
-                <p>Glisse ton fichier .kmz ici<br>ou clique pour le selectionner</p>
+                <p>Glisse tes fichiers .kmz ici<br>ou clique pour les selectionner</p>
                 <div class="filename" id="fileName"></div>
-                <input type="file" name="kmz_file" id="fileInput" accept=".kmz" hidden>
+                <input type="file" name="kmz_file" id="fileInput" accept=".kmz" multiple hidden>
             </div>
 
             <label class="option">
@@ -204,9 +204,13 @@
         fileInput.addEventListener("change", onFileSelected);
 
         function onFileSelected() {
-            const file = fileInput.files[0];
-            if (file) {
-                fileName.textContent = file.name;
+            const files = fileInput.files;
+            if (files.length === 1) {
+                fileName.textContent = files[0].name;
+            } else if (files.length > 1) {
+                fileName.textContent = `${files.length} fichiers selectionnes`;
+            }
+            if (files.length) {
                 btnNotion.disabled = false;
                 btnCsv.disabled = false;
             }
@@ -273,7 +277,8 @@
 
             switch (data.step) {
                 case "init":
-                    progressText.textContent = `0 / ${data.total} points — carte : ${data.carte}`;
+                    const filesInfo = data.files > 1 ? ` (${data.files} cartes)` : "";
+                    progressText.textContent = `0 / ${data.total} points — ${data.carte}${filesInfo}`;
                     break;
 
                 case "geocode":
