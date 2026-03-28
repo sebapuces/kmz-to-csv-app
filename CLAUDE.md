@@ -6,6 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Webapp Flask qui importe des fichiers KMZ (cartes Google Maps) dans une base Notion, avec export CSV en option. Contexte L214 : les lieux sont des elevages, couvoirs, abattoirs avec des especes animales.
 
+## Stack
+
+- Python 3.10+
+- Flask 3.1.3
+- notion-client 3.0.0 (SDK officiel Notion)
+- defusedxml 0.7.1 (parsing XML securise)
+- certifi (certificats SSL pour Nominatim)
+
 ## Commandes
 
 ```bash
