@@ -530,7 +530,8 @@ def _import_rows_to_notion(notion, database_id, rows, schema=None, extra=None):
 @app.route("/")
 def index():
     has_token = bool(os.environ.get("NOTION_TOKEN"))
-    return render_template("index.html", has_token=has_token)
+    models = [{"id": mid, "label": info["label"]} for mid, info in CLAUDE_MODELS.items()]
+    return render_template("index.html", has_token=has_token, models=models)
 
 
 @app.route("/convert", methods=["POST"])
@@ -806,6 +807,7 @@ def smart_add_route():
     model = request.form.get("model", "").strip() or DEFAULT_MODEL
     if model not in CLAUDE_MODELS:
         model = DEFAULT_MODEL
+    model_label = CLAUDE_MODELS[model]["label"]
 
     md_file = request.files.get("md_file")
     if md_file and md_file.filename:
@@ -841,7 +843,6 @@ def smart_add_route():
             "properties": list(schema.keys()),
         })
 
-        model_label = CLAUDE_MODELS.get(model, {}).get("label", model)
         yield _ndjson_line({"step": "searching",
                             "message": f"Recherche avec {model_label}..."})
 

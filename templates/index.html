@@ -247,7 +247,9 @@
                 <div class="field">
                     <label for="modelSelect">Modele IA</label>
                     <select id="modelSelect" name="model">
-                        <option value="">Chargement...</option>
+                        {% for m in models %}
+                        <option value="{{ m.id }}">{{ m.label }}</option>
+                        {% endfor %}
                     </select>
                     <div class="hint">Le cout sera affiche apres la recherche</div>
                 </div>
@@ -490,19 +492,11 @@
             if (files.length) mdFileName.textContent = files[0].name;
         });
 
-        // Charger les modeles disponibles
         const modelSelect = document.getElementById("modelSelect");
-        (async () => {
-            try {
-                const resp = await fetch("/models");
-                const models = await resp.json();
-                modelSelect.innerHTML = models.map(m =>
-                    `<option value="${m.id}">${m.label}</option>`
-                ).join("");
-                const saved = localStorage.getItem("kmz_model");
-                if (saved && models.some(m => m.id === saved)) modelSelect.value = saved;
-            } catch { modelSelect.innerHTML = '<option value="">Erreur chargement</option>'; }
-        })();
+        const savedModel = localStorage.getItem("kmz_model");
+        if (savedModel && modelSelect.querySelector(`option[value="${savedModel}"]`)) {
+            modelSelect.value = savedModel;
+        }
         modelSelect.addEventListener("change", () => {
             localStorage.setItem("kmz_model", modelSelect.value);
         });
