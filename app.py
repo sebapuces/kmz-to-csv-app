@@ -705,25 +705,61 @@ Reponds UNIQUEMENT avec un JSON valide, sous la forme d'un tableau d'objets :
 Pas de texte avant ou apres le JSON. Chaque objet represente un lieu a ajouter."""
 
 
-def call_claude_smart_add(api_key: str, schema: dict, user_query: str):
+# Prix par million de tokens (USD) — maj: mai 2025
+CLAUDE_MODELS = {
+    "claude-sonnet-4-20250514": {
+        "label": "Sonnet 4",
+        "input": 3.0,
+        "output": 15.0,
+    },
+    "claude-haiku-3-5-20241022": {
+        "label": "Haiku 3.5",
+        "input": 0.80,
+        "output": 4.0,
+    },
+    "claude-opus-4-20250514": {
+        "label": "Opus 4",
+        "input": 15.0,
+        "output": 75.0,
+    },
+}
+
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
+
+
+def compute_cost(model_id: str, input_tokens: int, output_tokens: int) -> float:
+    """Calcule le cout en USD a partir de l'usage tokens."""
+    pricing = CLAUDE_MODELS.get(model_id, CLAUDE_MODELS[DEFAULT_MODEL])
+    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+
+
+def call_claude_smart_add(api_key: str, schema: dict, user_query: str,
+                          model: str = DEFAULT_MODEL):
     """Appelle Claude API avec web search pour trouver les infos.
 
+    Retourne (rows, cost_usd) — rows est une liste de dicts,
+    cost_usd le cout total estime en dollars.
+
     web_search_20250305 is a server-managed tool: the API executes searches
-    internally. However we still run an agentic loop in case the model needs
-    multiple turns (stop_reason == "tool_use").
+    internally. We run an agentic loop in case the model needs multiple turns.
     """
     client = Anthropic(api_key=api_key)
     writable_schema = {k: v for k, v in schema.items() if v["type"] in WRITABLE_TYPES}
     prompt = build_claude_prompt(writable_schema, user_query)
     messages = [{"role": "user", "content": prompt}]
 
+    total_input = 0
+    total_output = 0
+
     for _ in range(10):
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=model,
             max_tokens=4096,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}],
             messages=messages,
         )
+        total_input += response.usage.input_tokens
+        total_output += response.usage.output_tokens
         if response.stop_reason == "end_turn":
             break
         messages.append({"role": "assistant", "content": response.content})
@@ -731,22 +767,34 @@ def call_claude_smart_add(api_key: str, schema: dict, user_query: str):
     else:
         log.warning("Claude smart-add: boucle agentic interrompue apres 10 tours")
 
+    cost_usd = compute_cost(model, total_input, total_output)
+    log.info("Claude smart-add: %d input + %d output tokens, cout ~$%.4f",
+             total_input, total_output, cost_usd)
+
     text_parts = [block.text for block in response.content if block.type == "text"]
     full_text = "\n".join(text_parts).strip()
 
     try:
-        return json.loads(full_text)
+        return json.loads(full_text), cost_usd
     except json.JSONDecodeError:
         pass
 
     match = re.search(r'\[.*\]', full_text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(0))
+            return json.loads(match.group(0)), cost_usd
         except json.JSONDecodeError:
             pass
 
     raise ValueError(f"Claude n'a pas retourne de JSON valide. Reponse : {full_text[:500]}")
+
+
+@app.route("/models", methods=["GET"])
+def models_route():
+    return jsonify([
+        {"id": mid, "label": info["label"]}
+        for mid, info in CLAUDE_MODELS.items()
+    ])
 
 
 @app.route("/smart-add", methods=["POST"])
@@ -755,6 +803,9 @@ def smart_add_route():
     database_url = request.form.get("notion_database", "").strip()
     claude_key = request.form.get("claude_key", "").strip()
     user_query = request.form.get("query", "").strip()
+    model = request.form.get("model", "").strip() or DEFAULT_MODEL
+    if model not in CLAUDE_MODELS:
+        model = DEFAULT_MODEL
 
     md_file = request.files.get("md_file")
     if md_file and md_file.filename:
@@ -790,10 +841,12 @@ def smart_add_route():
             "properties": list(schema.keys()),
         })
 
-        yield _ndjson_line({"step": "searching", "message": "Recherche d'informations avec Claude..."})
+        model_label = CLAUDE_MODELS.get(model, {}).get("label", model)
+        yield _ndjson_line({"step": "searching",
+                            "message": f"Recherche avec {model_label}..."})
 
         try:
-            rows = call_claude_smart_add(claude_key, schema, user_query)
+            rows, cost_usd = call_claude_smart_add(claude_key, schema, user_query, model)
         except Exception as e:
             yield _ndjson_line({"step": "error", "message": f"Erreur Claude API : {e}"})
             return
@@ -802,9 +855,13 @@ def smart_add_route():
             rows = [rows]
 
         total = len(rows)
-        yield _ndjson_line({"step": "found", "total": total, "message": f"{total} lieu(x) trouve(s)"})
+        yield _ndjson_line({"step": "found", "total": total,
+                            "message": f"{total} lieu(x) trouve(s)"})
 
-        yield from _import_rows_to_notion(notion, database_id, rows, schema=schema)
+        yield from _import_rows_to_notion(
+            notion, database_id, rows, schema=schema,
+            extra={"cost_usd": round(cost_usd, 4), "model": model_label},
+        )
 
     return _ndjson_response(generate())
 

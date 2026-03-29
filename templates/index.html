@@ -82,6 +82,13 @@
         }
         .field { margin-bottom: 14px; }
         .field label { display: block; font-size: .9rem; font-weight: 500; margin-bottom: 4px; }
+        .field select {
+            width: 100%; padding: 10px 12px; font-size: .9rem;
+            border: 1px solid #ddd; border-radius: 8px;
+            background: white; font-family: inherit;
+            cursor: pointer; transition: border-color .2s;
+        }
+        .field select:focus { outline: none; border-color: #4a90d9; }
         .field input, .field textarea {
             width: 100%; padding: 10px 12px; font-size: .9rem;
             border: 1px solid #ddd; border-radius: 8px;
@@ -235,6 +242,14 @@
                     <p>Glisse un fichier .md / .txt ici</p>
                     <div class="filename" id="mdFileName"></div>
                     <input type="file" name="md_file" id="mdFileInput" accept=".md,.txt,.markdown" hidden>
+                </div>
+
+                <div class="field">
+                    <label for="modelSelect">Modele IA</label>
+                    <select id="modelSelect" name="model">
+                        <option value="">Chargement...</option>
+                    </select>
+                    <div class="hint">Le cout sera affiche apres la recherche</div>
                 </div>
 
                 <div class="buttons">
@@ -475,6 +490,23 @@
             if (files.length) mdFileName.textContent = files[0].name;
         });
 
+        // Charger les modeles disponibles
+        const modelSelect = document.getElementById("modelSelect");
+        (async () => {
+            try {
+                const resp = await fetch("/models");
+                const models = await resp.json();
+                modelSelect.innerHTML = models.map(m =>
+                    `<option value="${m.id}">${m.label}</option>`
+                ).join("");
+                const saved = localStorage.getItem("kmz_model");
+                if (saved && models.some(m => m.id === saved)) modelSelect.value = saved;
+            } catch { modelSelect.innerHTML = '<option value="">Erreur chargement</option>'; }
+        })();
+        modelSelect.addEventListener("change", () => {
+            localStorage.setItem("kmz_model", modelSelect.value);
+        });
+
         btnSmartAdd.addEventListener("click", async () => {
             const query = document.getElementById("smartQuery").value.trim();
             const hasMd = mdFileInput.files.length > 0;
@@ -494,6 +526,7 @@
             formData.set("notion_database", getNotionDb());
             formData.set("claude_key", getClaudeKey());
             formData.set("query", query);
+            formData.set("model", modelSelect.value);
             if (hasMd) formData.set("md_file", mdFileInput.files[0]);
 
             try {
@@ -585,6 +618,12 @@
                     progressArea.classList.remove("visible");
                     let msg = `${data.created} lieu(x) importe(s)`;
                     if (data.carte) msg += ` (carte : ${data.carte})`;
+                    if (data.model && data.cost_usd != null) {
+                        const cost = data.cost_usd < 0.01
+                            ? `< $0.01`
+                            : `~$${data.cost_usd.toFixed(2)}`;
+                        msg += `\nModele : ${data.model} — Cout : ${cost}`;
+                    }
                     if (data.errors && data.errors.length) {
                         msg += `\n${data.errors.length} erreur(s) :\n` + data.errors.slice(0, 5).join("\n");
                     }
