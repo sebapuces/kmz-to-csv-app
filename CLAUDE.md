@@ -13,6 +13,7 @@ Webapp Flask qui importe des fichiers KMZ (cartes Google Maps) dans une base Not
 - notion-client 3.0.0 (SDK officiel Notion)
 - defusedxml 0.7.1 (parsing XML securise)
 - certifi (certificats SSL pour Nominatim)
+- anthropic (SDK Claude API, pour l'ajout intelligent avec web search)
 
 ## Commandes
 
@@ -33,10 +34,14 @@ Fichier unique `app.py` (~580 lignes) avec 7 sections delimitees par des comment
 3. **Geocoding** — reverse geocoding Nominatim avec rate-limit 1.1s, generation liens Google Maps
 4. **CSV generation** — enrichissement des placemarks + export CSV colonnes dynamiques
 5. **Notion integration** — creation auto des proprietes manquantes dans la base (`ensure_db_properties`), creation de pages avec typage correct (title, rich_text, select, number, url, date)
-6. **Routes** — `GET /` (UI), `POST /convert` (CSV multi-fichiers), `POST /import-notion` (streaming NDJSON multi-fichiers)
-7. **NDJSON helpers** — format streaming : steps `init`, `geocode`, `imported`, `import_error`, `done`, `error`
+6. **Routes** — `GET /` (UI), `POST /convert` (CSV multi-fichiers), `POST /import-notion` (streaming NDJSON multi-fichiers), `POST /db-schema` (lecture schema Notion), `POST /smart-add` (ajout intelligent streaming NDJSON)
+7. **Schema Notion + Ajout intelligent** — lecture dynamique du schema de la base Notion (`read_db_schema`), appel Claude API avec `web_search_20250305` pour rechercher les infos, creation de pages via `create_notion_page(schema=...)` (generique, base sur le schema)
+8. **NDJSON helpers** — format streaming : steps `init`, `schema_read`, `searching`, `found`, `geocode`, `imported`, `import_error`, `done`, `error`
 
-Frontend : `templates/index.html` — page unique avec drag & drop multi-fichiers, progress bar temps reel via NDJSON streaming.
+Frontend : `templates/index.html` — 3 onglets :
+- **Import KMZ** : drag & drop multi-fichiers, import Notion streaming ou export CSV
+- **Ajout intelligent** : saisie texte ou upload .md, Claude API recherche les infos et cree les pages
+- **Preferences** : token Notion, URL base Notion, cle API Claude (stockes en localStorage)
 
 ## Proprietes Notion
 
@@ -67,3 +72,5 @@ Frontend : `templates/index.html` — page unique avec drag & drop multi-fichier
 - **Port** : 5050
 - **Multi-fichiers** : les routes `/convert` et `/import-notion` acceptent plusieurs KMZ via `request.files.getlist("kmz_file")`
 - **Detection espece/exploitation** : matching par mots-cles dans le texte concatene (nom + description + dossier). L'ordre des dicts `ESPECE_KEYWORDS` et `EXPLOITATION_KEYWORDS` definit la priorite de detection.
+- **Ajout intelligent** : utilise Claude API (claude-sonnet-4-20250514) avec l'outil `web_search_20250305` pour chercher des infos sur les lieux. Le prompt inclut le schema dynamique de la base Notion cible. La cle API Claude est fournie par l'utilisateur (localStorage cote client, jamais stockee cote serveur).
+- **Preferences** : les tokens/cles sont stockes en localStorage dans le navigateur et envoyes a chaque requete. Pas de session cote serveur.

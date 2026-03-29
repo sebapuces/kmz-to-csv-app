@@ -17,6 +17,7 @@ from pathlib import Path
 
 import certifi
 
+from anthropic import Anthropic
 from defusedxml.ElementTree import fromstring as xml_fromstring
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 from notion_client import Client as NotionClient
@@ -125,7 +126,6 @@ def parse_placemarks(kml_text: str) -> list[dict]:
                 if key:
                     extended[key] = get_val(el).strip()
 
-        # Ignorer les placemarks sans coordonnees (notes, fragments, annotations)
         if not lat:
             continue
 
@@ -175,28 +175,7 @@ ESPECE_KEYWORDS = {
     "Equins": ["chevaux?", "cheval", "equins?", "juments?", "poulains?", "anes?"],
 }
 
-
-def _build_keyword_patterns(keyword_dict: dict) -> list[tuple[str, re.Pattern]]:
-    """Compile les mots-cles en regex avec word boundaries."""
-    result = []
-    for label, keywords in keyword_dict.items():
-        pattern = re.compile(r"\b(?:" + "|".join(keywords) + r")\b")
-        result.append((label, pattern))
-    return result
-
-
-_ESPECE_PATTERNS = _build_keyword_patterns(ESPECE_KEYWORDS)
-
-
-def detect_espece(nom: str, description: str, dossier: str) -> str:
-    """Deduit l'espece animale a partir du nom, description et dossier."""
-    text = f"{nom} {description} {dossier}".lower()
-    for espece, pattern in _ESPECE_PATTERNS:
-        if pattern.search(text):
-            return espece
-    return ""
-
-
+# Ordre d'insertion = priorite de detection (Abattoir > Couvoir > Elevage)
 EXPLOITATION_KEYWORDS = {
     "Abattoir": [
         "abattoirs?", "abattage", "tueries?",
@@ -213,16 +192,31 @@ EXPLOITATION_KEYWORDS = {
 }
 
 
-_EXPLOITATION_PATTERNS = [
-    (type_expl, re.compile(r"\b(?:" + "|".join(EXPLOITATION_KEYWORDS[type_expl]) + r")\b"))
-    for type_expl in ("Abattoir", "Couvoir", "Élevage")
-]
+def _build_keyword_patterns(keyword_dict: dict) -> list[tuple[str, re.Pattern]]:
+    """Compile les mots-cles en regex avec word boundaries."""
+    result = []
+    for label, keywords in keyword_dict.items():
+        pattern = re.compile(r"\b(?:" + "|".join(keywords) + r")\b")
+        result.append((label, pattern))
+    return result
+
+
+_ESPECE_PATTERNS = _build_keyword_patterns(ESPECE_KEYWORDS)
+_EXPLOITATION_PATTERNS = _build_keyword_patterns(EXPLOITATION_KEYWORDS)
+
+
+def detect_espece(nom: str, description: str, dossier: str) -> str:
+    """Deduit l'espece animale a partir du nom, description et dossier."""
+    text = f"{nom} {description} {dossier}".lower()
+    for espece, pattern in _ESPECE_PATTERNS:
+        if pattern.search(text):
+            return espece
+    return ""
 
 
 def detect_exploitation(nom: str, description: str, dossier: str) -> str:
     """Classe le lieu en Elevage, Couvoir ou Abattoir."""
     text = f"{nom} {description} {dossier}".lower()
-    # Abattoir et Couvoir en priorite (plus specifiques)
     for type_expl, pattern in _EXPLOITATION_PATTERNS:
         if pattern.search(text):
             return type_expl
@@ -264,32 +258,41 @@ def google_maps_link(lat: str, lon: str) -> str:
     return f"https://www.google.com/maps?q={lat},{lon}"
 
 
-# ── CSV generation ─────────────────────────────────────────────────
+# ── Enrichissement ────────────────────────────────────────────────
+
+def enrich_row(row: dict, carte_name: str, with_geocoding: bool,
+               rate_limit: bool = False) -> dict:
+    """Enrichit un placemark avec metadonnees, geocodage, liens."""
+    row = dict(row)
+    row["Carte"] = carte_name
+    lat, lon = row.get("Latitude", ""), row.get("Longitude", "")
+
+    if with_geocoding:
+        if rate_limit:
+            time.sleep(1.1)
+        row["Adresse"] = reverse_geocode(lat, lon)
+
+    row["Google Maps"] = google_maps_link(lat, lon)
+    row["Date d'import"] = date.today().isoformat()
+
+    nom = row.get("Nom", "")
+    desc = row.get("Description", "")
+    dossier = row.get("Dossier", "")
+    row["Espèce"] = detect_espece(nom, desc, dossier)
+    row["URL"] = extract_url(desc)
+    row["Exploitation"] = detect_exploitation(nom, desc, dossier)
+
+    return row
+
 
 def enrich_placemarks(placemarks, carte_name, with_geocoding):
-    today = date.today().isoformat()
-    rows = []
-    for i, pm in enumerate(placemarks):
-        row = dict(pm)
-        row["Carte"] = carte_name
-        lat, lon = row.get("Latitude", ""), row.get("Longitude", "")
-        if with_geocoding:
-            if i > 0:
-                time.sleep(1.1)
-            row["Adresse"] = reverse_geocode(lat, lon)
-        row["Google Maps"] = google_maps_link(lat, lon)
-        row["Date d'import"] = today
+    return [
+        enrich_row(pm, carte_name, with_geocoding, rate_limit=(i > 0))
+        for i, pm in enumerate(placemarks)
+    ]
 
-        nom = row.get("Nom", "")
-        desc = row.get("Description", "")
-        dossier = row.get("Dossier", "")
-        row["Espèce"] = detect_espece(nom, desc, dossier)
-        row["URL"] = extract_url(desc)
-        row["Exploitation"] = detect_exploitation(nom, desc, dossier)
 
-        rows.append(row)
-    return rows
-
+# ── CSV generation ────────────────────────────────────────────────
 
 def build_csv(rows: list[dict]) -> str:
     if not rows:
@@ -326,6 +329,22 @@ DB_PROPERTIES = {
     "Exploitation": {"select": {}},
 }
 
+NOTION_TYPE_MAP = {
+    "title": "titre",
+    "rich_text": "texte",
+    "number": "nombre",
+    "select": "choix unique",
+    "multi_select": "choix multiples",
+    "date": "date",
+    "url": "URL",
+    "email": "email",
+    "phone_number": "telephone",
+    "checkbox": "case a cocher",
+    "status": "statut",
+}
+
+WRITABLE_TYPES = set(NOTION_TYPE_MAP.keys())
+
 
 def parse_database_id(url_or_id: str) -> str:
     url_or_id = url_or_id.strip().rstrip("/")
@@ -338,6 +357,21 @@ def parse_database_id(url_or_id: str) -> str:
                 return hex_part
         return segment
     return url_or_id.replace("-", "")
+
+
+def read_db_schema(notion, database_id: str) -> dict:
+    """Lit le schema d'une base Notion et retourne {nom_prop: {type, label, options?}}."""
+    db = notion.databases.retrieve(database_id)
+    schema = {}
+    for name, prop in db["properties"].items():
+        ptype = prop["type"]
+        options = None
+        if ptype in ("select", "multi_select"):
+            options = [opt["name"] for opt in prop[ptype].get("options", [])]
+        schema[name] = {"type": ptype, "label": NOTION_TYPE_MAP.get(ptype, ptype)}
+        if options:
+            schema[name]["options"] = options
+    return schema
 
 
 def ensure_db_properties(notion, database_id, extra_fields):
@@ -356,51 +390,139 @@ def ensure_db_properties(notion, database_id, extra_fields):
         notion.databases.update(database_id, properties=updates)
 
 
-def create_notion_page(notion, database_id, row):
+def create_notion_page(notion, database_id: str, row: dict, schema: dict | None = None):
+    """Cree une page Notion. Utilise le schema dynamique si fourni,
+    sinon fallback sur le mapping hardcode pour les champs standard KMZ."""
     props = {}
 
-    # Title
-    nom = row.get("Nom", "Sans nom")
-    props["Nom"] = {"title": [{"text": {"content": nom[:2000]}}]}
+    if schema:
+        for name, value in row.items():
+            if name not in schema or value is None or value == "":
+                continue
+            ptype = schema[name]["type"]
 
-    # Rich text
-    for field in ("Description", "Adresse"):
-        val = row.get(field, "")
-        if val:
-            props[field] = {"rich_text": [{"text": {"content": val[:2000]}}]}
+            if ptype == "title":
+                props[name] = {"title": [{"text": {"content": str(value)[:2000]}}]}
+            elif ptype == "rich_text":
+                props[name] = {"rich_text": [{"text": {"content": str(value)[:2000]}}]}
+            elif ptype == "number":
+                try:
+                    props[name] = {"number": float(value)}
+                except (ValueError, TypeError):
+                    pass
+            elif ptype == "select":
+                props[name] = {"select": {"name": str(value)[:100]}}
+            elif ptype == "multi_select":
+                if isinstance(value, list):
+                    props[name] = {"multi_select": [{"name": str(v)[:100]} for v in value]}
+                else:
+                    props[name] = {"multi_select": [{"name": str(value)[:100]}]}
+            elif ptype == "url":
+                props[name] = {"url": str(value)}
+            elif ptype == "email":
+                props[name] = {"email": str(value)}
+            elif ptype == "phone_number":
+                props[name] = {"phone_number": str(value)}
+            elif ptype == "date":
+                props[name] = {"date": {"start": str(value)}}
+            elif ptype == "checkbox":
+                props[name] = {"checkbox": bool(value)}
 
-    # Select
-    for field in ("Dossier", "Couleur", "Carte", "Espèce", "Exploitation"):
-        val = row.get(field, "")
-        if val:
-            props[field] = {"select": {"name": val[:100]}}
+        if "Date d'import" in schema and "Date d'import" not in row:
+            props["Date d'import"] = {"date": {"start": date.today().isoformat()}}
+    else:
+        # Fallback hardcode pour l'import KMZ (schema standard connu)
+        nom = row.get("Nom", "Sans nom")
+        props["Nom"] = {"title": [{"text": {"content": nom[:2000]}}]}
 
-    # Numbers
-    for field in ("Latitude", "Longitude"):
-        val = row.get(field, "")
-        if val:
-            try:
-                props[field] = {"number": float(val)}
-            except ValueError:
-                pass
+        for field in ("Description", "Adresse"):
+            val = row.get(field, "")
+            if val:
+                props[field] = {"rich_text": [{"text": {"content": val[:2000]}}]}
 
-    # URLs
-    for field in ("Google Maps", "URL"):
-        val = row.get(field, "")
-        if val:
-            props[field] = {"url": val}
+        for field in ("Dossier", "Couleur", "Carte", "Espèce", "Exploitation"):
+            val = row.get(field, "")
+            if val:
+                props[field] = {"select": {"name": val[:100]}}
 
-    # Date
-    date_import = row.get("Date d'import", "")
-    if date_import:
-        props["Date d'import"] = {"date": {"start": date_import}}
+        for field in ("Latitude", "Longitude"):
+            val = row.get(field, "")
+            if val:
+                try:
+                    props[field] = {"number": float(val)}
+                except ValueError:
+                    pass
 
-    # Extended KML fields
-    for k, v in row.items():
-        if k not in STANDARD_FIELDS and v:
-            props[k] = {"rich_text": [{"text": {"content": str(v)[:2000]}}]}
+        for field in ("Google Maps", "URL"):
+            val = row.get(field, "")
+            if val:
+                props[field] = {"url": val}
+
+        date_import = row.get("Date d'import", "")
+        if date_import:
+            props["Date d'import"] = {"date": {"start": date_import}}
+
+        for k, v in row.items():
+            if k not in STANDARD_FIELDS and v:
+                props[k] = {"rich_text": [{"text": {"content": str(v)[:2000]}}]}
 
     notion.pages.create(parent={"database_id": database_id}, properties=props)
+
+
+# ── NDJSON helpers ─────────────────────────────────────────────────
+
+def _ndjson_line(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False) + "\n"
+
+
+def _ndjson_error(message: str):
+    return Response(
+        _ndjson_line({"step": "error", "message": message}),
+        mimetype="application/x-ndjson",
+        status=400,
+    )
+
+
+def _ndjson_response(generator):
+    """Wrap un generateur dans une Response streaming NDJSON."""
+    return Response(
+        stream_with_context(generator),
+        mimetype="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
+def _import_rows_to_notion(notion, database_id, rows, schema=None, extra=None):
+    """Boucle partagee : cree des pages Notion, yield la progression NDJSON."""
+    created = 0
+    errors = []
+
+    for i, row in enumerate(rows):
+        nom = row.get("Nom", "?")
+        try:
+            create_notion_page(notion, database_id, row, schema)
+            created += 1
+            yield _ndjson_line({
+                "step": "imported",
+                "current": i + 1,
+                "total": len(rows),
+                "name": nom,
+            })
+        except Exception as e:
+            errors.append(f"{nom}: {e}")
+            log.warning("Erreur Notion pour %s: %s", nom, e)
+            yield _ndjson_line({
+                "step": "import_error",
+                "current": i + 1,
+                "total": len(rows),
+                "name": nom,
+                "message": str(e)[:200],
+            })
+
+    done = {"step": "done", "created": created, "errors": errors}
+    if extra:
+        done.update(extra)
+    yield _ndjson_line(done)
 
 
 # ── Routes ─────────────────────────────────────────────────────────
@@ -463,7 +585,6 @@ def import_notion_route():
 
     with_geocoding = request.form.get("geocoding") == "on"
 
-    # Parse all files upfront
     all_cartes = []
     for file in files:
         try:
@@ -480,7 +601,6 @@ def import_notion_route():
         return _ndjson_error("Aucun point trouve dans les fichiers.")
 
     total_points = sum(len(pms) for _, pms in all_cartes)
-    today = date.today().isoformat()
 
     def generate():
         notion = NotionClient(auth=token)
@@ -494,7 +614,6 @@ def import_notion_route():
             "files": len(all_cartes),
         })
 
-        # Collect extra fields from all files
         extra_fields = set()
         for _, placemarks in all_cartes:
             for pm in placemarks:
@@ -506,88 +625,188 @@ def import_notion_route():
             yield _ndjson_line({"step": "error", "message": f"Erreur config base Notion : {e}"})
             return
 
-        created = 0
-        errors = []
+        # Enrichir tous les placemarks avec geocodage streaming
+        all_rows = []
         global_idx = 0
-
         for carte_name, placemarks in all_cartes:
             for pm in placemarks:
-                row = dict(pm)
-                row["Carte"] = carte_name
-                lat, lon = row.get("Latitude", ""), row.get("Longitude", "")
-
-                # Geocoding
+                row = enrich_row(pm, carte_name, with_geocoding,
+                                 rate_limit=(global_idx > 0 and with_geocoding))
                 if with_geocoding:
-                    if global_idx > 0:
-                        time.sleep(1.1)
-                    addr = reverse_geocode(lat, lon)
-                    row["Adresse"] = addr
                     yield _ndjson_line({
                         "step": "geocode",
                         "current": global_idx + 1,
                         "total": total_points,
                         "name": row.get("Nom", ""),
-                        "adresse": addr[:100],
+                        "adresse": row.get("Adresse", "")[:100],
                     })
-
-                row["Google Maps"] = google_maps_link(lat, lon)
-                row["Date d'import"] = today
-
-                nom = row.get("Nom", "")
-                desc = row.get("Description", "")
-                dossier = row.get("Dossier", "")
-                row["Espèce"] = detect_espece(nom, desc, dossier)
-                row["URL"] = extract_url(desc)
-                row["Exploitation"] = detect_exploitation(nom, desc, dossier)
-
-                # Create Notion page
-                try:
-                    create_notion_page(notion, database_id, row)
-                    created += 1
-                    yield _ndjson_line({
-                        "step": "imported",
-                        "current": global_idx + 1,
-                        "total": total_points,
-                        "name": nom,
-                    })
-                except Exception as e:
-                    err = f"{nom or '?'}: {e}"
-                    errors.append(err)
-                    log.warning("Erreur Notion pour %s: %s", nom, e)
-                    yield _ndjson_line({
-                        "step": "import_error",
-                        "current": global_idx + 1,
-                        "total": total_points,
-                        "name": nom,
-                        "message": str(e)[:200],
-                    })
-
+                all_rows.append(row)
                 global_idx += 1
 
+        yield from _import_rows_to_notion(
+            notion, database_id, all_rows,
+            extra={"carte": carte_names},
+        )
+
+    return _ndjson_response(generate())
+
+
+# ── Schema Notion + Ajout intelligent ─────────────────────────────
+
+@app.route("/db-schema", methods=["POST"])
+def db_schema_route():
+    data = request.get_json(force=True, silent=True) or {}
+    token = data.get("notion_token", "").strip()
+    database_url = data.get("notion_database", "").strip()
+
+    if not token:
+        return jsonify({"error": "Token Notion manquant"}), 400
+    if not database_url:
+        return jsonify({"error": "URL de la base Notion manquante"}), 400
+
+    try:
+        notion = NotionClient(auth=token)
+        database_id = parse_database_id(database_url)
+        schema = read_db_schema(notion, database_id)
+        return jsonify({"schema": schema})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+def build_claude_prompt(schema: dict, user_query: str) -> str:
+    """Construit le prompt pour Claude avec le schema de la base."""
+    schema_desc = []
+    for name, info in schema.items():
+        line = f'- "{name}" ({info["label"]})'
+        if info.get("options"):
+            line += f' — valeurs existantes : {", ".join(info["options"][:20])}'
+        schema_desc.append(line)
+
+    return f"""Tu es un assistant qui recherche des informations sur des lieux (elevages, abattoirs, couvoirs, entreprises agroalimentaires) pour les ajouter dans une base de donnees.
+
+Voici le schema de la base Notion cible :
+{chr(10).join(schema_desc)}
+
+L'utilisateur te demande :
+{user_query}
+
+INSTRUCTIONS :
+1. Utilise l'outil web_search pour chercher des informations sur le(s) lieu(x) demande(s).
+2. Pour CHAQUE lieu trouve, retourne un objet JSON avec les proprietes de la base remplies au mieux.
+3. Pour les champs "select" avec des options existantes, utilise une option existante si elle correspond, sinon propose une nouvelle valeur.
+4. Pour les coordonnees (Latitude/Longitude), cherche-les sur le web.
+5. Pour le champ "Google Maps", genere le lien https://www.google.com/maps?q=LAT,LON
+6. Le champ "Date d'import" sera rempli automatiquement, ne le remplis pas.
+7. Ne remplis PAS les champs pour lesquels tu n'as aucune information fiable.
+
+Reponds UNIQUEMENT avec un JSON valide, sous la forme d'un tableau d'objets :
+[{{"Nom": "...", "Latitude": 48.123, ...}}]
+
+Pas de texte avant ou apres le JSON. Chaque objet represente un lieu a ajouter."""
+
+
+def call_claude_smart_add(api_key: str, schema: dict, user_query: str):
+    """Appelle Claude API avec web search pour trouver les infos.
+
+    web_search_20250305 is a server-managed tool: the API executes searches
+    internally. However we still run an agentic loop in case the model needs
+    multiple turns (stop_reason == "tool_use").
+    """
+    client = Anthropic(api_key=api_key)
+    writable_schema = {k: v for k, v in schema.items() if v["type"] in WRITABLE_TYPES}
+    prompt = build_claude_prompt(writable_schema, user_query)
+    messages = [{"role": "user", "content": prompt}]
+
+    for _ in range(10):
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}],
+            messages=messages,
+        )
+        if response.stop_reason == "end_turn":
+            break
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": "Continue."})
+    else:
+        log.warning("Claude smart-add: boucle agentic interrompue apres 10 tours")
+
+    text_parts = [block.text for block in response.content if block.type == "text"]
+    full_text = "\n".join(text_parts).strip()
+
+    try:
+        return json.loads(full_text)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r'\[.*\]', full_text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Claude n'a pas retourne de JSON valide. Reponse : {full_text[:500]}")
+
+
+@app.route("/smart-add", methods=["POST"])
+def smart_add_route():
+    token = request.form.get("notion_token", "").strip()
+    database_url = request.form.get("notion_database", "").strip()
+    claude_key = request.form.get("claude_key", "").strip()
+    user_query = request.form.get("query", "").strip()
+
+    md_file = request.files.get("md_file")
+    if md_file and md_file.filename:
+        md_content = md_file.stream.read().decode("utf-8")
+        if user_query:
+            user_query = f"{user_query}\n\nContenu du fichier {md_file.filename} :\n{md_content}"
+        else:
+            user_query = f"Trouve tous les lieux mentionnes dans ce document et ajoute-les dans la base :\n\n{md_content}"
+
+    if not token:
+        return _ndjson_error("Token Notion manquant (configurer dans Preferences)")
+    if not database_url:
+        return _ndjson_error("URL de la base Notion manquante (configurer dans Preferences)")
+    if not claude_key:
+        return _ndjson_error("Cle API Claude manquante (configurer dans Preferences)")
+    if not user_query:
+        return _ndjson_error("Aucune requete ou fichier fourni")
+
+    def generate():
+        yield _ndjson_line({"step": "init", "message": "Lecture du schema de la base Notion..."})
+
+        try:
+            notion = NotionClient(auth=token)
+            database_id = parse_database_id(database_url)
+            schema = read_db_schema(notion, database_id)
+        except Exception as e:
+            yield _ndjson_line({"step": "error", "message": f"Erreur lecture base Notion : {e}"})
+            return
+
         yield _ndjson_line({
-            "step": "done",
-            "created": created,
-            "errors": errors,
-            "carte": carte_names,
+            "step": "schema_read",
+            "message": f"Schema lu : {len(schema)} proprietes",
+            "properties": list(schema.keys()),
         })
 
-    return Response(
-        stream_with_context(generate()),
-        mimetype="application/x-ndjson",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
-    )
+        yield _ndjson_line({"step": "searching", "message": "Recherche d'informations avec Claude..."})
 
+        try:
+            rows = call_claude_smart_add(claude_key, schema, user_query)
+        except Exception as e:
+            yield _ndjson_line({"step": "error", "message": f"Erreur Claude API : {e}"})
+            return
 
-def _ndjson_line(data: dict) -> str:
-    return json.dumps(data, ensure_ascii=False) + "\n"
+        if not isinstance(rows, list):
+            rows = [rows]
 
+        total = len(rows)
+        yield _ndjson_line({"step": "found", "total": total, "message": f"{total} lieu(x) trouve(s)"})
 
-def _ndjson_error(message: str):
-    return Response(
-        _ndjson_line({"step": "error", "message": message}),
-        mimetype="application/x-ndjson",
-        status=400,
-    )
+        yield from _import_rows_to_notion(notion, database_id, rows, schema=schema)
+
+    return _ndjson_response(generate())
 
 
 if __name__ == "__main__":
