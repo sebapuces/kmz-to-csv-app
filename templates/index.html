@@ -107,6 +107,8 @@
         .btn-primary:hover:not(:disabled) { background: #3a7bc8; }
         .btn-secondary { background: #eee; color: #555; }
         .btn-secondary:hover:not(:disabled) { background: #ddd; }
+        .btn-danger { background: #e57373; color: white; }
+        .btn-danger:hover:not(:disabled) { background: #d32f2f; }
 
         /* Progress */
         .progress-area {
@@ -179,6 +181,41 @@
         }
         .or-separator::before { left: 0; }
         .or-separator::after { right: 0; }
+        /* Review table */
+        .review-area { display: none; margin-top: 20px; }
+        .review-area.visible { display: block; }
+        .review-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 12px;
+        }
+        .review-header h3 { font-size: 1rem; }
+        .review-cost { font-size: .82rem; color: #888; }
+        .review-card {
+            background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 10px;
+            padding: 16px; margin-bottom: 12px;
+        }
+        .review-card .review-title {
+            font-weight: 600; font-size: .95rem; margin-bottom: 10px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .review-card .review-title .remove-btn {
+            background: none; border: none; color: #c62828; cursor: pointer;
+            font-size: .8rem; padding: 2px 8px;
+        }
+        .review-card .review-title .remove-btn:hover { text-decoration: underline; }
+        .review-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .review-field label {
+            display: block; font-size: .75rem; color: #888;
+            margin-bottom: 2px; text-transform: uppercase; letter-spacing: .3px;
+        }
+        .review-field input {
+            width: 100%; padding: 6px 8px; font-size: .85rem;
+            border: 1px solid #ddd; border-radius: 6px; font-family: inherit;
+        }
+        .review-field input:focus { outline: none; border-color: #4a90d9; }
+        .review-field--wide { grid-column: 1 / -1; }
+        .review-buttons { display: flex; gap: 10px; margin-top: 16px; }
+
         .drop-zone--compact { padding: 20px; }
         .drop-zone--compact p { font-size: .9rem; }
         .drop-zone--compact .filename { font-size: .9rem; }
@@ -255,11 +292,27 @@
                 </div>
 
                 <div class="buttons">
-                    <button type="button" class="btn btn-primary" id="btnSmartAdd">
-                        Rechercher et ajouter
+                    <button type="button" class="btn btn-primary" id="btnSmartSearch">
+                        Rechercher
                     </button>
                 </div>
             </form>
+
+            <div class="review-area" id="reviewArea">
+                <div class="review-header">
+                    <h3>Resultats a valider</h3>
+                    <span class="review-cost" id="reviewCost"></span>
+                </div>
+                <div id="reviewCards"></div>
+                <div class="review-buttons">
+                    <button type="button" class="btn btn-primary" id="btnConfirmImport">
+                        Valider et importer
+                    </button>
+                    <button type="button" class="btn btn-secondary" id="btnCancelReview">
+                        Annuler
+                    </button>
+                </div>
+            </div>
         </div>
 
         <!-- ═══ Tab: Preferences ═══ -->
@@ -382,6 +435,8 @@
             progressBar.style.width = "0%";
             progressText.textContent = "";
             progressStep.textContent = "";
+            const ra = document.getElementById("reviewArea");
+            if (ra) ra.classList.remove("visible");
         }
 
         function showError(msg) {
@@ -486,7 +541,14 @@
         const dropZoneMd = document.getElementById("dropZoneMd");
         const mdFileInput = document.getElementById("mdFileInput");
         const mdFileName = document.getElementById("mdFileName");
-        const btnSmartAdd = document.getElementById("btnSmartAdd");
+        const btnSmartSearch = document.getElementById("btnSmartSearch");
+        const reviewArea = document.getElementById("reviewArea");
+        const reviewCards = document.getElementById("reviewCards");
+        const reviewCost = document.getElementById("reviewCost");
+        const btnConfirmImport = document.getElementById("btnConfirmImport");
+        const btnCancelReview = document.getElementById("btnCancelReview");
+
+        let pendingReviewSchema = null;
 
         setupDropZone(dropZoneMd, mdFileInput, files => {
             if (files.length) mdFileName.textContent = files[0].name;
@@ -501,7 +563,61 @@
             localStorage.setItem("kmz_model", modelSelect.value);
         });
 
-        btnSmartAdd.addEventListener("click", async () => {
+        function buildReviewCards(rows, schema) {
+            // Champs larges (texte long)
+            const wideFields = new Set(["Description", "Adresse", "Google Maps", "URL"]);
+            // Champs a ne pas afficher (auto-remplis)
+            const hiddenFields = new Set(["Date d'import"]);
+
+            const fields = Object.keys(schema).filter(f => !hiddenFields.has(f));
+
+            reviewCards.innerHTML = rows.map((row, idx) => {
+                const fieldsHtml = fields.map(name => {
+                    const val = row[name] != null ? String(row[name]) : "";
+                    const wide = wideFields.has(name) || val.length > 60;
+                    return `<div class="review-field${wide ? " review-field--wide" : ""}">
+                        <label>${name}</label>
+                        <input type="text" data-row="${idx}" data-field="${name}" value="${val.replace(/"/g, "&quot;")}">
+                    </div>`;
+                }).join("");
+
+                const title = row.Nom || `Lieu ${idx + 1}`;
+                return `<div class="review-card" data-row-idx="${idx}">
+                    <div class="review-title">
+                        <span>${title}</span>
+                        <button class="remove-btn" data-row="${idx}">Retirer</button>
+                    </div>
+                    <div class="review-fields">${fieldsHtml}</div>
+                </div>`;
+            }).join("");
+
+            // Boutons retirer
+            reviewCards.querySelectorAll(".remove-btn").forEach(btn => {
+                btn.addEventListener("click", () => {
+                    const card = btn.closest(".review-card");
+                    card.remove();
+                    if (!reviewCards.children.length) {
+                        reviewArea.classList.remove("visible");
+                    }
+                });
+            });
+        }
+
+        function collectReviewRows() {
+            const rows = [];
+            reviewCards.querySelectorAll(".review-card").forEach(card => {
+                const row = {};
+                card.querySelectorAll("input[data-field]").forEach(input => {
+                    const val = input.value.trim();
+                    if (val) row[input.dataset.field] = val;
+                });
+                if (Object.keys(row).length) rows.push(row);
+            });
+            return rows;
+        }
+
+        // Phase 1 : recherche
+        btnSmartSearch.addEventListener("click", async () => {
             const query = document.getElementById("smartQuery").value.trim();
             const hasMd = mdFileInput.files.length > 0;
 
@@ -511,7 +627,8 @@
             if (!getClaudeKey()) { showError("Configure la cle API Claude dans l'onglet Preferences."); return; }
 
             resetUI();
-            btnSmartAdd.disabled = true;
+            reviewArea.classList.remove("visible");
+            btnSmartSearch.disabled = true;
             progressArea.classList.add("visible");
             progressText.textContent = "Demarrage...";
 
@@ -524,14 +641,49 @@
             if (hasMd) formData.set("md_file", mdFileInput.files[0]);
 
             try {
-                const resp = await fetch("/smart-add", { method: "POST", body: formData });
+                const resp = await fetch("/smart-search", { method: "POST", body: formData });
                 await handleNdjsonStream(resp);
             } catch (err) {
                 progressArea.classList.remove("visible");
                 showError("Erreur : " + err.message);
             }
 
-            btnSmartAdd.disabled = false;
+            btnSmartSearch.disabled = false;
+        });
+
+        // Phase 2 : import apres validation
+        btnConfirmImport.addEventListener("click", async () => {
+            const rows = collectReviewRows();
+            if (!rows.length) { showError("Aucun lieu a importer."); return; }
+
+            resetUI();
+            reviewArea.classList.remove("visible");
+            btnConfirmImport.disabled = true;
+            progressArea.classList.add("visible");
+            progressText.textContent = "Import en cours...";
+
+            try {
+                const resp = await fetch("/smart-import", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({
+                        notion_token: getNotionToken(),
+                        notion_database: getNotionDb(),
+                        rows: rows,
+                    }),
+                });
+                await handleNdjsonStream(resp);
+            } catch (err) {
+                progressArea.classList.remove("visible");
+                showError("Erreur : " + err.message);
+            }
+
+            btnConfirmImport.disabled = false;
+        });
+
+        btnCancelReview.addEventListener("click", () => {
+            reviewArea.classList.remove("visible");
+            resetUI();
         });
 
         // ── Shared NDJSON stream handler ──
@@ -586,6 +738,20 @@
                 case "found":
                     progressText.textContent = data.message;
                     progressBar.style.width = "50%";
+                    break;
+
+                case "review":
+                    progressArea.classList.remove("visible");
+                    pendingReviewSchema = data.schema || null;
+                    if (data.rows && data.rows.length) {
+                        const schema = pendingReviewSchema || {};
+                        buildReviewCards(data.rows, schema);
+                        const cost = data.cost_usd < 0.01 ? "< $0.01" : `~$${data.cost_usd.toFixed(2)}`;
+                        reviewCost.textContent = `${data.model} — ${cost}`;
+                        reviewArea.classList.add("visible");
+                    } else {
+                        showError("Aucun lieu trouve.");
+                    }
                     break;
 
                 case "geocode":

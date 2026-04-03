@@ -428,7 +428,8 @@ def create_notion_page(notion, database_id: str, row: dict, schema: dict | None 
             elif ptype == "checkbox":
                 props[name] = {"checkbox": bool(value)}
 
-        if "Date d'import" in schema and "Date d'import" not in row:
+        # Toujours forcer la date d'import a aujourd'hui
+        if "Date d'import" in schema:
             props["Date d'import"] = {"date": {"start": date.today().isoformat()}}
     else:
         # Fallback hardcode pour l'import KMZ (schema standard connu)
@@ -697,7 +698,7 @@ INSTRUCTIONS :
 3. Pour les champs "select" avec des options existantes, utilise une option existante si elle correspond, sinon propose une nouvelle valeur.
 4. Pour les coordonnees (Latitude/Longitude), cherche-les sur le web.
 5. Pour le champ "Google Maps", genere le lien https://www.google.com/maps?q=LAT,LON
-6. Le champ "Date d'import" sera rempli automatiquement, ne le remplis pas.
+6. Pour l'adresse, inclure IMPERATIVEMENT le numero de rue (ex: "1 Bd Surcouf" et non "Bd Surcouf"). L'adresse complete avec numero est essentielle pour le geocodage.
 7. Ne remplis PAS les champs pour lesquels tu n'as aucune information fiable.
 
 Reponds UNIQUEMENT avec un JSON valide, sous la forme d'un tableau d'objets :
@@ -798,8 +799,9 @@ def models_route():
     ])
 
 
-@app.route("/smart-add", methods=["POST"])
-def smart_add_route():
+@app.route("/smart-search", methods=["POST"])
+def smart_search_route():
+    """Recherche avec Claude, retourne les resultats pour validation."""
     token = request.form.get("notion_token", "").strip()
     database_url = request.form.get("notion_database", "").strip()
     claude_key = request.form.get("claude_key", "").strip()
@@ -837,10 +839,12 @@ def smart_add_route():
             yield _ndjson_line({"step": "error", "message": f"Erreur lecture base Notion : {e}"})
             return
 
+        writable = {k: v for k, v in schema.items() if v["type"] in WRITABLE_TYPES}
+
         yield _ndjson_line({
             "step": "schema_read",
             "message": f"Schema lu : {len(schema)} proprietes",
-            "properties": list(schema.keys()),
+            "schema": writable,
         })
 
         yield _ndjson_line({"step": "searching",
@@ -855,14 +859,42 @@ def smart_add_route():
         if not isinstance(rows, list):
             rows = [rows]
 
-        total = len(rows)
-        yield _ndjson_line({"step": "found", "total": total,
-                            "message": f"{total} lieu(x) trouve(s)"})
+        yield _ndjson_line({
+            "step": "review",
+            "rows": rows,
+            "schema": writable,
+            "cost_usd": round(cost_usd, 4),
+            "model": model_label,
+        })
 
-        yield from _import_rows_to_notion(
-            notion, database_id, rows, schema=schema,
-            extra={"cost_usd": round(cost_usd, 4), "model": model_label},
-        )
+    return _ndjson_response(generate())
+
+
+@app.route("/smart-import", methods=["POST"])
+def smart_import_route():
+    """Importe les rows validees/editees par l'utilisateur dans Notion."""
+    data = request.get_json(force=True, silent=True) or {}
+    token = data.get("notion_token", "").strip()
+    database_url = data.get("notion_database", "").strip()
+    rows = data.get("rows", [])
+
+    if not token:
+        return _ndjson_error("Token Notion manquant")
+    if not database_url:
+        return _ndjson_error("URL de la base Notion manquante")
+    if not rows:
+        return _ndjson_error("Aucune donnee a importer")
+
+    def generate():
+        try:
+            notion = NotionClient(auth=token)
+            database_id = parse_database_id(database_url)
+            schema = read_db_schema(notion, database_id)
+        except Exception as e:
+            yield _ndjson_line({"step": "error", "message": f"Erreur Notion : {e}"})
+            return
+
+        yield from _import_rows_to_notion(notion, database_id, rows, schema=schema)
 
     return _ndjson_response(generate())
 
