@@ -714,8 +714,8 @@ CLAUDE_MODELS = {
         "input": 3.0,
         "output": 15.0,
     },
-    "claude-haiku-3-5-20241022": {
-        "label": "Haiku 3.5",
+    "claude-haiku-4-5-20251001": {
+        "label": "Haiku 4.5",
         "input": 0.80,
         "output": 4.0,
     },
