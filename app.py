@@ -17,7 +17,7 @@ from pathlib import Path
 
 import certifi
 
-from anthropic import Anthropic
+from anthropic import Anthropic, APIStatusError
 from defusedxml.ElementTree import fromstring as xml_fromstring
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 from notion_client import Client as NotionClient
@@ -754,12 +754,22 @@ def call_claude_smart_add(api_key: str, schema: dict, user_query: str,
     total_output = 0
 
     for _ in range(10):
-        response = client.messages.create(
-            model=model,
-            max_tokens=4096,
-            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}],
-            messages=messages,
-        )
+        for attempt in range(5):
+            try:
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}],
+                    messages=messages,
+                )
+                break
+            except APIStatusError as e:
+                if e.status_code == 529 and attempt < 4:
+                    wait = 2 ** attempt  # 1, 2, 4, 8s
+                    log.warning("Claude API 529 (overloaded), retry %d/4 dans %ds", attempt + 1, wait)
+                    time.sleep(wait)
+                else:
+                    raise
         total_input += response.usage.input_tokens
         total_output += response.usage.output_tokens
         if response.stop_reason == "end_turn":
