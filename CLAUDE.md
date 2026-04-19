@@ -56,7 +56,7 @@ Frontend : `templates/index.html` — 3 onglets :
 | Adresse | rich_text | Nominatim reverse geocoding |
 | Google Maps | url | Genere depuis lat/lon |
 | Date d'import | date | Date du jour (ISO) |
-| Espece | select | Deduit du nom/description/dossier |
+| Espece | multi_select | Deduit du nom/description/dossier |
 | URL | url | Premiere URL dans la description |
 | Exploitation | select | Elevage / Couvoir / Abattoir |
 | [champs KML etendus] | rich_text | `<Data>` / `<SimpleData>` |

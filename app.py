@@ -324,7 +324,7 @@ DB_PROPERTIES = {
     "Adresse": {"rich_text": {}},
     "Google Maps": {"url": {}},
     "Date d'import": {"date": {}},
-    "Espèce": {"select": {}},
+    "Espèce": {"multi_select": {}},
     "URL": {"url": {}},
     "Exploitation": {"select": {}},
 }
