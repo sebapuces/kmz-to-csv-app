@@ -273,7 +273,7 @@ def enrich_row(row: dict, carte_name: str, with_geocoding: bool,
         row["Adresse"] = reverse_geocode(lat, lon)
 
     row["Google Maps"] = google_maps_link(lat, lon)
-    row["Date d'import"] = date.today().isoformat()
+    row["Date importation"] = date.today().isoformat()
 
     nom = row.get("Nom", "")
     desc = row.get("Description", "")
@@ -311,7 +311,7 @@ STANDARD_FIELDS = {
     "Nom", "Description", "Dossier", "Couleur", "Carte",
     "Latitude", "Longitude",
     "Adresse", "Google Maps",
-    "Date d'import", "Espèce", "URL", "Exploitation",
+    "Date importation", "Espèce", "URL", "Exploitation",
 }
 
 DB_PROPERTIES = {
@@ -323,7 +323,7 @@ DB_PROPERTIES = {
     "Longitude": {"number": {"format": "number"}},
     "Adresse": {"rich_text": {}},
     "Google Maps": {"url": {}},
-    "Date d'import": {"date": {}},
+    "Date importation": {"date": {}},
     "Espèce": {"multi_select": {}},
     "URL": {"url": {}},
     "Exploitation": {"select": {}},
@@ -429,8 +429,8 @@ def create_notion_page(notion, database_id: str, row: dict, schema: dict | None 
                 props[name] = {"checkbox": bool(value)}
 
         # Toujours forcer la date d'import a aujourd'hui
-        if "Date d'import" in schema:
-            props["Date d'import"] = {"date": {"start": date.today().isoformat()}}
+        if "Date importation" in schema:
+            props["Date importation"] = {"date": {"start": date.today().isoformat()}}
     else:
         # Fallback hardcode pour l'import KMZ (schema standard connu)
         nom = row.get("Nom", "Sans nom")
@@ -463,9 +463,9 @@ def create_notion_page(notion, database_id: str, row: dict, schema: dict | None 
             if val:
                 props[field] = {"url": val}
 
-        date_import = row.get("Date d'import", "")
+        date_import = row.get("Date importation", "")
         if date_import:
-            props["Date d'import"] = {"date": {"start": date_import}}
+            props["Date importation"] = {"date": {"start": date_import}}
 
         for k, v in row.items():
             if k not in STANDARD_FIELDS and v:

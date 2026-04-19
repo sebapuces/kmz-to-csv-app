@@ -55,7 +55,7 @@ Frontend : `templates/index.html` — 3 onglets :
 | Latitude / Longitude | number | `<coordinates>` |
 | Adresse | rich_text | Nominatim reverse geocoding |
 | Google Maps | url | Genere depuis lat/lon |
-| Date d'import | date | Date du jour (ISO) |
+| Date importation | date | Date du jour (ISO) |
 | Espece | multi_select | Deduit du nom/description/dossier |
 | URL | url | Premiere URL dans la description |
 | Exploitation | select | Elevage / Couvoir / Abattoir |
