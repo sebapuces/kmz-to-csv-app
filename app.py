@@ -441,10 +441,14 @@ def create_notion_page(notion, database_id: str, row: dict, schema: dict | None 
             if val:
                 props[field] = {"rich_text": [{"text": {"content": val[:2000]}}]}
 
-        for field in ("Dossier", "Couleur", "Carte", "Espèce", "Exploitation"):
+        for field in ("Dossier", "Couleur", "Carte", "Exploitation"):
             val = row.get(field, "")
             if val:
                 props[field] = {"select": {"name": val[:100]}}
+
+        espece = row.get("Espèce", "")
+        if espece:
+            props["Espèce"] = {"multi_select": [{"name": espece[:100]}]}
 
         for field in ("Latitude", "Longitude"):
             val = row.get(field, "")
