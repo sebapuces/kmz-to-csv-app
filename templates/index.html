@@ -242,6 +242,12 @@
                     <input type="file" name="kmz_file" id="fileInput" accept=".kmz" multiple hidden>
                 </div>
 
+                <div class="field" style="margin-top:.5rem">
+                    <label for="origineCarteUrl">Origine carte (URL)</label>
+                    <input type="url" name="origine_carte_url" id="origineCarteUrl"
+                           placeholder="https://..." style="width:100%;padding:.4rem .6rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem">
+                </div>
+
                 <label class="option">
                     <input type="checkbox" name="geocoding" checked>
                     <span>
@@ -777,7 +783,14 @@
                 case "done":
                     progressArea.classList.remove("visible");
                     let msg = `${data.created} lieu(x) importe(s)`;
-                    if (data.carte) msg += ` (carte : ${data.carte})`;
+                    let carteHtml = "";
+                    if (data.carte) {
+                        if (data.origine_carte_url) {
+                            carteHtml = ` (<a href="${data.origine_carte_url}" target="_blank" rel="noopener">Origine carte</a> : ${data.carte})`;
+                        } else {
+                            carteHtml = ` (carte : ${data.carte})`;
+                        }
+                    }
                     if (data.model && data.cost_usd != null) {
                         const cost = data.cost_usd < 0.01
                             ? `< $0.01`
@@ -788,7 +801,7 @@
                         msg += `\n${data.errors.length} erreur(s) :\n` + data.errors.slice(0, 5).join("\n");
                     }
                     result.className = "result success";
-                    result.textContent = msg;
+                    result.innerHTML = msg.replace(/\n/g, "<br>") + carteHtml;
                     break;
 
                 case "error":

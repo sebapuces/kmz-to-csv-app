@@ -590,6 +590,7 @@ def import_notion_route():
         return _ndjson_error("URL de la base Notion manquante")
 
     with_geocoding = request.form.get("geocoding") == "on"
+    origine_carte_url = request.form.get("origine_carte_url", "").strip()
 
     all_cartes = []
     for file in files:
@@ -649,9 +650,12 @@ def import_notion_route():
                 all_rows.append(row)
                 global_idx += 1
 
+        extra = {"carte": carte_names}
+        if origine_carte_url:
+            extra["origine_carte_url"] = origine_carte_url
         yield from _import_rows_to_notion(
             notion, database_id, all_rows,
-            extra={"carte": carte_names},
+            extra=extra,
         )
 
     return _ndjson_response(generate())
